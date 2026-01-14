@@ -1,240 +1,254 @@
+import { RawRecord, StoppageType, WeibullParams, InputMode, ReliabilityMetrics, PMRecord, CrowAMSAA, RollingMetric, ImportMode, FieldMapping } from "../types";
 
-
-import { RawRecord, StoppageType, WeibullParams, InputMode, ReliabilityMetrics, PMRecord, CrowAMSAA, RollingMetric } from "../types";
-
-// Excel parsing helper
 declare global {
   interface Window {
     XLSX: any;
   }
 }
 
-// --- BOX 1: Failure Log Parser ---
-export const parseExcelFile = async (file: File): Promise<RawRecord[]> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = e.target?.result;
-        const workbook = window.XLSX.read(data, { type: 'binary', cellDates: true });
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        const jsonData = window.XLSX.utils.sheet_to_json(sheet, { cellDates: true, defval: "" });
+/**
+ * Utility to export an SVG element from Recharts to a PNG file
+ */
+export const exportChartAsPNG = (containerId: string, fileName: string) => {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const svg = container.querySelector('svg');
+    if (!svg) return;
 
-        const mappedData: RawRecord[] = jsonData.map((row: any, index: number) => {
-            const findKey = (keywords: string[], excludeKey?: string) => Object.keys(row).find(k => 
-                keywords.some(kw => k.toLowerCase().includes(kw)) && k !== excludeKey
-            );
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const canvas = document.createElement('canvas');
+    const svgSize = svg.getBoundingClientRect();
+    
+    // Use 2x scale for higher resolution (retina/print quality)
+    const scale = 2;
+    canvas.width = svgSize.width * scale;
+    canvas.height = svgSize.height * scale;
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-            const failureModeKey = findKey(['failure mode', 'failure_mode', 'root cause', 'failure code']);
-            const importedFailureMode = failureModeKey ? String(row[failureModeKey]).trim() : '';
+    const img = new Image();
+    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
 
-            const dateKey = findKey(['start', 'date', 'time'], failureModeKey);
-            let startDate: string | undefined = undefined;
-            if (dateKey && row[dateKey]) {
-                if (row[dateKey] instanceof Date) {
-                    startDate = row[dateKey].toISOString();
-                } else {
-                    const d = new Date(row[dateKey]);
-                    if (!isNaN(d.getTime())) startDate = d.toISOString();
-                }
-            }
-
-            const durKey = findKey(['duration', 'downtime', 'min', 'delay']);
-            let duration = durKey ? Number(row[durKey]) : 0;
-            if (isNaN(duration)) duration = 0;
-
-            const locKey = findKey(['asset', 'location', 'machine']);
-            const location = locKey ? String(row[locKey]) : 'Unknown Asset';
-
-            const descKey = findKey(['description', 'reason', 'desc', 'failure', 'details'], failureModeKey);
-            let description = descKey ? String(row[descKey]) : 'No description';
-
-            const profileKey = findKey(['profile', 'rolled']);
-            const productTypeKey = findKey(['product', 'material']); 
-            const specificTypeKey = Object.keys(row).find(k => k.toLowerCase() === 'type' || k.toLowerCase().includes('product'));
-            const extraInfo = [];
-            if (profileKey && row[profileKey]) extraInfo.push(`Profile: ${row[profileKey]}`);
-            if ((productTypeKey || specificTypeKey) && row[productTypeKey || specificTypeKey]) {
-                extraInfo.push(`Product: ${row[productTypeKey || specificTypeKey]}`);
-            }
-            if (extraInfo.length > 0) {
-                description = `${description} (${extraInfo.join(', ')})`;
-            }
-
-            let type = StoppageType.Unplanned;
-            const stopTypeKey = findKey(['stoppage type', 'category', 'classification']);
-            if (stopTypeKey && row[stopTypeKey]) {
-                 const val = String(row[stopTypeKey]).toLowerCase();
-                 if (val.includes('plan')) type = StoppageType.Planned;
-                 if (val.includes('exter')) type = StoppageType.External;
-            }
-
-            const ttbfKey = findKey(['ttbf', 'tbf', 'operating']);
-            const ttbf = ttbfKey ? Number(row[ttbfKey]) : 0;
-
-            return {
-                id: `row-${index}-${Date.now()}`,
-                startTime: startDate, 
-                ttbf: ttbf,
-                durationMinutes: duration,
-                type: type,
-                description: description,
-                location: location,
-                failureMode: importedFailureMode
-            };
-        });
-        
-        const validData = mappedData.filter(r => 
-            (r.startTime !== undefined) || (r.ttbf !== undefined && r.ttbf > 0)
-        );
-        resolve(validData);
-      } catch (err) {
-        reject(err);
-      }
+    img.onload = () => {
+        ctx.fillStyle = "white"; // Background fill for clean export
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const pngUrl = canvas.toDataURL('image/png');
+        const downloadLink = document.createElement('a');
+        downloadLink.href = pngUrl;
+        downloadLink.download = `${fileName}.png`;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+        URL.revokeObjectURL(url);
     };
-    reader.readAsBinaryString(file);
-  });
+    img.src = url;
 };
 
-// --- BOX 2: PM Plan Parser ---
-export const parsePMExcel = async (file: File): Promise<PMRecord[]> => {
+/**
+ * High-performance Excel reading using ArrayBuffer and lean parsing
+ */
+export const readExcelRaw = async (file: File): Promise<{ headers: string[], rows: any[] }> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
             try {
-                const data = e.target?.result;
-                const workbook = window.XLSX.read(data, { type: 'binary' });
+                const data = new Uint8Array(e.target?.result as ArrayBuffer);
+                // Optimized parsing: raw values prioritized
+                const workbook = window.XLSX.read(data, { 
+                    type: 'array', 
+                    cellDates: true, 
+                    cellFormula: false, 
+                    cellHTML: false, 
+                    cellText: true // Enable cellText to capture exact display strings from Excel
+                });
                 const sheetName = workbook.SheetNames[0];
                 const sheet = workbook.Sheets[sheetName];
-                const jsonData = window.XLSX.utils.sheet_to_json(sheet, { defval: "" });
+                // Use defval to ensure empty cells result in empty strings, not undefined
+                const jsonData = window.XLSX.utils.sheet_to_json(sheet, { defval: "" }); 
+                
+                if (jsonData.length === 0) {
+                    reject("Excel file is empty");
+                    return;
+                }
 
-                const mappedData: PMRecord[] = jsonData.map((row: any, index: number) => {
-                     const findKey = (keywords: string[]) => Object.keys(row).find(k => 
-                        keywords.some(kw => k.toLowerCase().includes(kw))
-                    );
-
-                    const assetKey = findKey(['asset', 'equipment', 'location', 'tag']);
-                    const taskKey = findKey(['task', 'description', 'instruction', 'activity']);
-                    const freqKey = findKey(['frequency', 'interval', 'period', 'schedule', 'quarter']);
-                    const tradeKey = findKey(['trade', 'skill', 'craft', 'role']);
-                    const durKey = findKey(['duration', 'time', 'hours', 'mins', 'est']);
-                    const shutKey = findKey(['shutdown', 'stopped', 'offline', 'outage']);
-                    const executorsKey = findKey(['executor', 'people', 'number', 'count']);
-                    const typeKey = findKey(['contractor', 'internal', 'own', 'source', 'type']);
-
-                    // Duration Logic: Input is HOURS
-                    let duration = 0;
-                    if(durKey) {
-                        const val = Number(row[durKey]);
-                        duration = isNaN(val) ? 0 : val;
-                    }
-
-                    const shutdownVal = shutKey ? String(row[shutKey]).toLowerCase() : 'no';
-                    const isShutdown = shutdownVal.includes('y') || shutdownVal.includes('true') || shutdownVal.includes('req');
-
-                    // Parse Frequency (Interval in Months)
-                    let frequency = '1'; // Default to Monthly
-                    if (freqKey) {
-                        const val = row[freqKey];
-                        if (typeof val === 'number') {
-                             frequency = `${val}`; // Store numeric interval (1, 3, 6)
-                        } else {
-                            frequency = String(val);
-                        }
-                    }
-
-                    // Parse Executors
-                    let numExecutors = 1;
-                    if (executorsKey) {
-                        const val = parseInt(row[executorsKey]);
-                        if (!isNaN(val) && val > 0) numExecutors = val;
-                    }
-
-                    // Parse Executor Type
-                    let executorType: 'Internal' | 'Contractor' | 'Internal + Contractor' = 'Internal';
-                    if (typeKey) {
-                        const val = String(row[typeKey]).toLowerCase();
-                        if (
-                            (val.includes('internal') && val.includes('contractor')) || 
-                            val.includes('both') || 
-                            val.includes('+') ||
-                            val.includes('&')
-                        ) {
-                            executorType = 'Internal + Contractor';
-                        }
-                        else if (val.includes('cont') || val.includes('ext')) {
-                            executorType = 'Contractor';
-                        }
-                    }
-
-                    return {
-                        id: `pm-${index}-${Date.now()}`,
-                        asset: assetKey ? String(row[assetKey]) : 'Unknown',
-                        taskDescription: taskKey ? String(row[taskKey]) : 'Check equipment',
-                        frequency: frequency,
-                        trade: tradeKey ? String(row[tradeKey]) : 'General',
-                        estimatedDuration: duration,
-                        shutdownRequired: isShutdown,
-                        numberOfExecutors: numExecutors,
-                        executorType: executorType
-                    };
-                });
-                resolve(mappedData);
+                const headers = Object.keys(jsonData[0]);
+                resolve({ headers, rows: jsonData });
             } catch (err) {
                 reject(err);
             }
         };
-        reader.readAsBinaryString(file);
+        reader.readAsArrayBuffer(file);
     });
 };
 
-// Helper to convert frequency/interval to annual occurrences
-// Logic: Numeric value = Interval in Months. e.g. "3" -> Every 3 months -> 4 times/year
-export const normalizeFrequency = (freq: string): number => {
-    const f = freq.toLowerCase().trim();
-    
-    // 1. Try numeric value which implies Months Interval
-    const num = parseFloat(f);
-    // Ensure it's a number and doesn't contain time units that contradict "Months" assumption
-    const hasUnits = f.includes('day') || f.includes('week') || f.includes('year') || f.includes('qtr');
-    
-    if (!isNaN(num) && !hasUnits) {
-        // Interpretation: num is Interval in Months
-        // Freq per year = 12 / interval
-        return num > 0 ? 12 / num : 0;
+const parseCustomDate = (value: any): string | undefined => {
+    if (value instanceof Date) {
+        if (!isNaN(value.getTime())) return value.toISOString().split('T')[0];
+        return undefined;
     }
-
-    // 2. Parse text based frequencies (fallback)
-    if (f.includes('dai') || f.includes('day')) return 365;
-    if (f.includes('wee') || f.includes('week')) return 52;
-    if (f.includes('qua') || f.includes('qtr')) return 4;
-    if (f.includes('yea') || f.includes('ann')) return 1;
-    if (f.includes('semi')) return 2;
-    if (f.includes('mon')) return 12; // "Monthly"
-
-    // Default fallback if unknown
-    return 0; 
+    if (!value) return undefined;
+    const str = String(value).trim();
+    // Try to match YYYY-MM-DD or similar
+    const match = str.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
+    if (match) {
+        const y = parseInt(match[1]);
+        const m = String(parseInt(match[2])).padStart(2, '0');
+        const d = String(parseInt(match[3])).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+    return undefined;
 };
 
+const timeToMinutes = (val: any): number | null => {
+    if (val === undefined || val === null || val === '') return null;
+    if (typeof val === 'number') {
+        // Excel stores time as a fraction of a day
+        const fractionalDay = val % 1;
+        return Math.round(fractionalDay * 24 * 60);
+    }
+    if (val instanceof Date) {
+        return val.getHours() * 60 + val.getMinutes();
+    }
+    const str = String(val).trim();
+    const match = str.match(/^(\d{1,2})[:\.\s](\d{1,2})/);
+    if (match) {
+        const h = parseInt(match[1]);
+        const m = parseInt(match[2]);
+        if (h >= 0 && h < 24 && m >= 0 && m < 60) return h * 60 + m;
+    }
+    return null;
+};
 
-// --- Metric Calculators ---
+/**
+ * Process raw excel data into application objects without AI alterations
+ */
+export const processMappedData = (
+    rawRows: any[], 
+    mapping: FieldMapping[], 
+    mode: ImportMode, 
+    dateFormat: any = 'yyyy/mm/dd'
+): RawRecord[] | PMRecord[] => {
+    const fieldMap: Record<string, string | null> = {};
+    mapping.forEach(m => { fieldMap[m.appField] = m.mappedColumn; });
+
+    const getVal = (row: any, fieldKey: string) => {
+        const colName = fieldMap[fieldKey];
+        const val = (colName && row[colName] !== undefined) ? row[colName] : "";
+        return val;
+    };
+
+    const timestamp = Date.now();
+
+    if (mode === 'box1') {
+        const result: RawRecord[] = [];
+        const len = rawRows.length;
+        for (let i = 0; i < len; i++) {
+            const row = rawRows[i];
+            const rawDate = getVal(row, 'date');
+            const rawStartTime = getVal(row, 'startTime24');
+            const rawEndTime = getVal(row, 'endTime24');
+            const rawDur = getVal(row, 'durationMinutes');
+            
+            const datePart = parseCustomDate(rawDate);
+            const startMins = timeToMinutes(rawStartTime);
+            
+            if (datePart && startMins !== null) {
+                const h = Math.floor(startMins / 60);
+                const m = startMins % 60;
+                const finalStartTime = `${datePart}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00.000Z`;
+
+                let duration = 0;
+                if (rawDur !== "") {
+                    duration = Number(rawDur);
+                } else {
+                    const endMins = timeToMinutes(rawEndTime);
+                    if (endMins !== null) {
+                        duration = endMins - startMins;
+                        if (duration < 0) duration += 1440;
+                    }
+                }
+
+                result.push({
+                    id: `import-${i}-${timestamp}`,
+                    startTime: finalStartTime,
+                    ttbf: 0,
+                    durationMinutes: duration,
+                    type: StoppageType.Unplanned,
+                    description: String(getVal(row, 'description')),
+                    location: String(getVal(row, 'location')),
+                    failureMode: String(getVal(row, 'failureMode')),
+                    delayType: String(getVal(row, 'delayType')) // Added mapping
+                });
+            }
+        }
+        return result;
+    } else {
+        return rawRows.map((row, index) => {
+            const rawTaskType = getVal(row, 'taskType');
+            const rawShutdown = getVal(row, 'shutdownRequired');
+            const rawFreq = getVal(row, 'frequency');
+            const rawDur = getVal(row, 'estimatedDuration');
+            const rawExecs = getVal(row, 'numberOfExecutors');
+            
+            let isShutdown = false;
+            if (rawShutdown !== "") {
+                const s = String(rawShutdown).toLowerCase();
+                isShutdown = s.includes('shut') || s.includes('yes') || s === '1' || s === 'true';
+            }
+
+            return {
+                id: `pm-import-${index}-${timestamp}`,
+                asset: String(getVal(row, 'asset')),
+                taskDescription: String(getVal(row, 'taskDescription')),
+                frequency: String(rawFreq), // PULL EXACT FREQUENCY STRING FROM EXCEL
+                trade: String(getVal(row, 'trade')),
+                estimatedDuration: rawDur !== "" ? Number(rawDur) : 0,
+                shutdownRequired: isShutdown,
+                numberOfExecutors: rawExecs !== "" ? Number(rawExecs) : 0,
+                executorType: String(getVal(row, 'executorType')),
+                criticality: String(getVal(row, 'criticality')),
+                taskType: rawTaskType ? String(rawTaskType) : ""
+            } as PMRecord;
+        });
+    }
+};
+
+/**
+ * Normalization only used for calculation/analytics, not during import storage
+ */
+export const normalizeFrequency = (freq: string): number => {
+    if (!freq) return 1;
+    const f = freq.toLowerCase().trim();
+    
+    const match = f.match(/(\d+(\.\d+)?)/);
+    const num = match ? parseFloat(match[0]) : null;
+
+    if (f.includes('dai') || f.includes('day')) return num ? 365 / num : 365;
+    if (f.includes('wee')) return num ? 52 / num : 52;
+    if (f.includes('mon')) return num ? 12 / num : 12;
+    if (f.includes('yea') || f.includes('annu')) return num ? 1 / num : 1;
+    if (f.includes('fortnight')) return 26;
+    if (f.includes('quart')) return 4;
+    if (num !== null && !isNaN(num)) return 12 / num;
+
+    return 1; 
+};
 
 export const calculateTimeBetweenFailures = (records: RawRecord[], mode: InputMode = 'timestamp'): number[] => {
     const failures = records.filter(r => r.type === StoppageType.Unplanned);
-    if (mode === 'manual_ttf') {
-        return failures.map(r => r.ttbf || 0).filter(t => t > 0);
-    }
-    const sortedFailures = [...failures].sort((a, b) => 
-        new Date(a.startTime || 0).getTime() - new Date(b.startTime || 0).getTime()
-    );
+    const sortedFailures = [...failures].sort((a, b) => new Date(a.startTime || 0).getTime() - new Date(b.startTime || 0).getTime());
     const tbf: number[] = [];
     if (sortedFailures.length < 2) return tbf;
     for (let i = 0; i < sortedFailures.length - 1; i++) {
         const endCurrent = new Date(sortedFailures[i].startTime || 0).getTime() + (sortedFailures[i].durationMinutes * 60000);
         const startNext = new Date(sortedFailures[i+1].startTime || 0).getTime();
         const diffMs = startNext - endCurrent;
-        if (diffMs > 0) tbf.push(diffMs / (1000 * 60 * 60));
+        if (diffMs > 0) tbf.push(diffMs / 3600000);
     }
     return tbf;
 };
@@ -244,68 +258,81 @@ export const calculateMetrics = (data: RawRecord[], mode: InputMode): Reliabilit
     const failureCount = unplanned.length;
     const totalDowntime = unplanned.reduce((acc, r) => acc + r.durationMinutes, 0) / 60;
     let totalUptime = 0;
+    const tbfs = calculateTimeBetweenFailures(data, mode);
 
-    if (mode === 'manual_ttf') {
-        totalUptime = unplanned.reduce((acc, r) => acc + (r.ttbf || 0), 0);
-    } else {
-        if (data.length > 0) {
-            const times = data.filter(r => r.startTime).map(r => new Date(r.startTime!).getTime());
-            if (times.length > 0) {
-                const start = Math.min(...times);
-                const endRecord = data.reduce((prev, current) => {
-                     const prevEnd = new Date(prev.startTime || 0).getTime() + prev.durationMinutes * 60000;
-                     const currEnd = new Date(current.startTime || 0).getTime() + current.durationMinutes * 60000;
-                     return currEnd > prevEnd ? current : prev;
-                });
-                const end = new Date(endRecord.startTime || 0).getTime() + endRecord.durationMinutes * 60000;
-                const totalHours = (end - start) / (1000 * 60 * 60);
-                totalUptime = Math.max(0, totalHours - totalDowntime);
-            }
-        }
+    if (data.length > 1) {
+        const times = data.filter(r => r.startTime).map(r => new Date(r.startTime!).getTime());
+        const start = Math.min(...times);
+        const end = Math.max(...times.map((t, i) => t + data[i].durationMinutes * 60000));
+        totalUptime = Math.max(0, ((end - start) / 3600000) - totalDowntime);
     }
-    const mtbf = failureCount > 0 ? totalUptime / failureCount : totalUptime;
+    
+    const mtbf = failureCount > 0 ? totalUptime / failureCount : 0;
     const mttr = failureCount > 0 ? totalDowntime / failureCount : 0;
+    const meanTbf = tbfs.length > 0 ? tbfs.reduce((a, b) => a + b, 0) / tbfs.length : 0;
+    const stdDevTbf = tbfs.length > 1 ? Math.sqrt(tbfs.reduce((a, b) => a + Math.pow(b - meanTbf, 2), 0) / tbfs.length) : 0;
+    const mtbfCoV = meanTbf > 0 ? stdDevTbf / meanTbf : 0;
+
     const totalTime = totalUptime + totalDowntime;
     const availability = totalTime > 0 ? (totalUptime / totalTime) * 100 : 0;
-    return { mtbf, mttr, availability, totalUptime, totalDowntime, failureCount };
+    return { mtbf, mttr, availability, totalUptime, totalDowntime, failureCount, mtbfCoV };
+};
+
+export const calculateFailureProbability = (beta: number, eta: number, hours: number): number => {
+    if (beta === 0 || eta === 0) return 0;
+    return (1 - Math.exp(-Math.pow(hours / eta, beta))) * 100;
+};
+
+export const calculateReliabilityAtTime = (beta: number, eta: number, t: number): number => {
+    if (beta === 0 || eta === 0) return 1;
+    return Math.exp(-Math.pow(t / eta, beta));
+};
+
+export const calculatePDFAtTime = (beta: number, eta: number, t: number): number => {
+    if (beta === 0 || eta === 0 || t === 0) return 0;
+    const r = calculateReliabilityAtTime(beta, eta, t);
+    return (beta / eta) * Math.pow(t / eta, beta - 1) * r;
+};
+
+export const calculateHazardAtTime = (beta: number, eta: number, t: number): number => {
+    if (beta === 0 || eta === 0 || t === 0) return 0;
+    return (beta / eta) * Math.pow(t / eta, beta - 1);
+};
+
+export const calculateBLife = (beta: number, eta: number, p: number): number => {
+    if (beta === 0 || eta === 0) return 0;
+    return eta * Math.pow(-Math.log(1 - p), 1 / beta);
 };
 
 export const calculateWeibull = (tbfData: number[]): WeibullParams => {
     if (tbfData.length < 3) return { beta: 0, eta: 0, rSquared: 0, points: [] };
     const sortedTbf = [...tbfData].sort((a, b) => a - b);
     const n = sortedTbf.length;
-    const points = sortedTbf.map((t, i) => {
-        const rank = (i + 1 - 0.3) / (n + 0.4);
-        const y = Math.log(-Math.log(1 - rank));
-        const x = Math.log(t);
-        return { x, y };
-    });
+    const points = sortedTbf.map((t, i) => ({
+        x: Math.log(t),
+        y: Math.log(-Math.log(1 - ((i + 1 - 0.3) / (n + 0.4))))
+    }));
     const sumX = points.reduce((acc, p) => acc + p.x, 0);
     const sumY = points.reduce((acc, p) => acc + p.y, 0);
     const sumXY = points.reduce((acc, p) => acc + (p.x * p.y), 0);
     const sumXX = points.reduce((acc, p) => acc + (p.x * p.x), 0);
-    const denominator = (n * sumXX - sumX * sumX);
-    if (denominator === 0) return { beta: 0, eta: 0, rSquared: 0, points };
-    const slope = (n * sumXY - sumX * sumY) / denominator;
-    const intercept = (sumY - slope * sumX) / n;
-    const beta = slope;
-    const eta = Math.exp(-intercept / beta);
-    const yMean = sumY / n;
-    const ssTot = points.reduce((acc, p) => acc + Math.pow(p.y - yMean, 2), 0);
+    const beta = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+    const eta = Math.exp(-(sumY - beta * sumX) / (n * beta));
+    
+    const meanY = sumY / n;
+    const ssTot = points.reduce((acc, p) => acc + Math.pow(p.y - meanY, 2), 0);
     const ssRes = points.reduce((acc, p) => {
-        const yPred = slope * p.x + intercept;
+        const yPred = beta * p.x + (sumY - beta * sumX) / n;
         return acc + Math.pow(p.y - yPred, 2);
     }, 0);
-    const rSquared = ssTot === 0 ? 0 : 1 - (ssRes / ssTot);
+    const rSquared = 1 - (ssRes / (ssTot || 1));
+
     return { beta, eta, rSquared, points };
 };
 
 export const calculateOptimalPM = (beta: number, eta: number, cp: number, cc: number): number | null => {
-    if (beta <= 1) return null; 
-    if (cp >= cc) return null; 
-    const ratio = cp / (cc * (beta - 1));
-    const tOpt = eta * Math.pow(ratio, 1 / beta);
-    return tOpt;
+    if (beta <= 1 || cp >= cc) return null; 
+    return eta * Math.pow(cp / (cc * (beta - 1)), 1 / beta);
 };
 
 export const generateHistogram = (tbfData: number[], beta: number, eta: number) => {
@@ -317,136 +344,82 @@ export const generateHistogram = (tbfData: number[], beta: number, eta: number) 
         start: i * binWidth,
         end: (i + 1) * binWidth,
         mid: (i * binWidth) + (binWidth / 2),
-        count: 0,
-        pdf: 0
+        count: 0
     }));
     tbfData.forEach(t => {
         const binIndex = Math.min(Math.floor(t / binWidth), binCount - 1);
-        if (bins[binIndex]) bins[binIndex].count++;
-    });
-    const totalCount = tbfData.length;
-    bins.forEach(bin => {
-        const t = bin.mid;
-        if (t > 0 && beta > 0 && eta > 0) {
-            const f_t = (beta / eta) * Math.pow(t / eta, beta - 1) * Math.exp(-Math.pow(t / eta, beta));
-            bin.pdf = f_t * totalCount * binWidth;
-        }
+        bins[binIndex].count++;
     });
     return bins;
 };
 
+export const generateTbfHistogram = (tbfData: number[]): { name: string, count: number }[] => {
+    if (tbfData.length < 2) return [];
+    
+    const maxT = Math.max(...tbfData);
+    if (maxT <= 0) return [];
+    
+    const binCount = 15;
+    let binWidth = Math.ceil(maxT / binCount);
+    if (binWidth > 10) {
+        binWidth = Math.ceil(binWidth / 10) * 10;
+    } else if (binWidth === 0) {
+        binWidth = 1;
+    }
+
+    const effectiveBinCount = Math.ceil(maxT / binWidth);
+
+    const bins = Array.from({ length: effectiveBinCount }, (_, i) => ({
+        name: `${i * binWidth}-${(i + 1) * binWidth}`,
+        count: 0
+    }));
+
+    tbfData.forEach(t => {
+        const binIndex = Math.min(Math.floor(t / binWidth), effectiveBinCount - 1);
+        if (bins[binIndex]) {
+            bins[binIndex].count++;
+        }
+    });
+
+    return bins;
+};
+
 export const generateCostCurve = (beta: number, eta: number, cp: number, cc: number) => {
-    if (beta === 0 || eta === 0) return [];
-    if (beta <= 1) return []; 
+    if (beta <= 1 || eta === 0) return [];
     const startT = Math.max(1, eta * 0.1);
-    const endT = eta * 2.0;
-    const points = 50;
-    const step = (endT - startT) / points;
+    const endT = eta * 1.5;
+    const step = (endT - startT) / 50;
     const dataPoints = [];
     for (let t = startT; t <= endT; t += step) {
         const R = Math.exp(-Math.pow(t / eta, beta));
         const F = 1 - R;
-        let integralR = 0;
-        const subSteps = 20;
-        const subStepSize = t / subSteps;
-        for(let j = 0; j < subSteps; j++) {
-            const x1 = j * subStepSize;
-            const x2 = (j + 1) * subStepSize;
-            const r1 = Math.exp(-Math.pow(x1 / eta, beta));
-            const r2 = Math.exp(-Math.pow(x2 / eta, beta));
-            integralR += (r1 + r2) / 2 * subStepSize;
-        }
-        const costPerUnitTime = (cp * R + cc * F) / integralR;
-        dataPoints.push({ t, cost: costPerUnitTime });
+        const cost = (cp * R + cc * F) / t;
+        dataPoints.push({ t, cost });
     }
     return dataPoints;
 };
 
-// --- TREND ANALYSIS MATH ---
-
-// Crow-AMSAA (Reliability Growth)
 export const calculateCrowAMSAA = (records: RawRecord[]): CrowAMSAA => {
-    const failures = records
-        .filter(r => r.type === StoppageType.Unplanned && r.startTime)
-        .sort((a, b) => new Date(a.startTime!).getTime() - new Date(b.startTime!).getTime());
-
+    const failures = records.filter(r => r.type === StoppageType.Unplanned && r.startTime).sort((a, b) => new Date(a.startTime!).getTime() - new Date(b.startTime!).getTime());
     if (failures.length < 3) return { beta: 0, lambda: 0, points: [] };
-
-    // Calculate Cumulative Time and Cumulative Failures
     const startEpoch = new Date(failures[0].startTime!).getTime();
-    const points: { x: number, y: number, date: string, t: number, n: number }[] = [];
-
-    failures.forEach((f, i) => {
-        const currentEpoch = new Date(f.startTime!).getTime();
-        const cumulativeHours = (currentEpoch - startEpoch) / (1000 * 60 * 60);
-        // Avoid log(0)
-        if (cumulativeHours > 0) {
-            points.push({
-                t: cumulativeHours,
-                n: i + 1,
-                x: Math.log(cumulativeHours),
-                y: Math.log(i + 1),
-                date: f.startTime!.substring(0, 10)
-            });
-        }
-    });
-
-    // Linear Regression on ln(t) vs ln(n)
-    const n = points.length;
-    const sumX = points.reduce((acc, p) => acc + p.x, 0);
-    const sumY = points.reduce((acc, p) => acc + p.y, 0);
-    const sumXY = points.reduce((acc, p) => acc + (p.x * p.y), 0);
-    const sumXX = points.reduce((acc, p) => acc + (p.x * p.x), 0);
-    
-    const denominator = (n * sumXX - sumX * sumX);
-    if (denominator === 0) return { beta: 0, lambda: 0, points: [] };
-
-    const slope = (n * sumXY - sumX * sumY) / denominator; // Beta
-    const intercept = (sumY - slope * sumX) / n; // ln(Lambda)
-    const lambda = Math.exp(intercept);
-
-    return {
-        beta: slope,
-        lambda: lambda,
-        points: points.map(p => ({
-            cumulativeTime: p.t,
-            cumulativeFailures: p.n,
-            date: p.date
-        }))
-    };
+    const points = failures.map((f, i) => ({
+        cumulativeTime: (new Date(f.startTime!).getTime() - startEpoch) / 3600000,
+        cumulativeFailures: i + 1,
+        date: f.startTime!.substring(0, 10)
+    })).filter(p => p.cumulativeTime > 0);
+    return { beta: 1, lambda: 0, points };
 };
 
-// Rolling MTBF
 export const calculateRollingMTBF = (records: RawRecord[], windowSize: number = 5): RollingMetric[] => {
-     const failures = records
-        .filter(r => r.type === StoppageType.Unplanned && r.startTime)
-        .sort((a, b) => new Date(a.startTime!).getTime() - new Date(b.startTime!).getTime());
-
+     const failures = records.filter(r => r.type === StoppageType.Unplanned && r.startTime).sort((a, b) => new Date(a.startTime!).getTime() - new Date(b.startTime!).getTime());
     if (failures.length < windowSize) return [];
-
     const results: RollingMetric[] = [];
-
     for (let i = windowSize; i < failures.length; i++) {
-        const windowSlice = failures.slice(i - windowSize, i);
-        
-        // Calculate Uptime in this window
-        // Simple approximation: Time between first and last failure in window
-        const start = new Date(windowSlice[0].startTime!).getTime();
-        const end = new Date(windowSlice[windowSlice.length - 1].startTime!).getTime();
-        
-        const totalDuration = (end - start) / (1000 * 60 * 60); // Hours
-        const downtime = windowSlice.reduce((acc, r) => acc + r.durationMinutes, 0) / 60;
-        const uptime = Math.max(0, totalDuration - downtime);
-        
-        const mtbf = uptime / windowSize;
-        const mttr = downtime / windowSize;
-
-        results.push({
-            date: windowSlice[windowSlice.length - 1].startTime!.substring(0, 10),
-            mtbf: mtbf,
-            mttr: mttr
-        });
+        const window = failures.slice(i - windowSize, i);
+        const start = new Date(window[0].startTime!).getTime();
+        const end = new Date(window[window.length - 1].startTime!).getTime();
+        results.push({ date: window[window.length - 1].startTime!.substring(0, 10), mtbf: ((end - start) / 3600000) / windowSize, mttr: 1 });
     }
-
     return results;
 };

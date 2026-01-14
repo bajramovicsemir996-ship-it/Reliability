@@ -1,5 +1,5 @@
 {
-  "name": "Reliability",
+  "name": "ReliabilityToolkit",
   "description": "Asset reliability analysis tool with AI-powered failure mode recognition and maintenance optimization.",
   "requestFramePermissions": []
 }

@@ -1,728 +1,418 @@
-
 import React, { useMemo, useState } from 'react';
-import { RawRecord, StoppageType, ReliabilityMetrics, InputMode } from '../types';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Cell, Legend, ComposedChart, Scatter } from 'recharts';
-import { calculateMetrics, calculateTimeBetweenFailures, calculateWeibull, generateHistogram } from '../utils/reliabilityMath';
-import { Filter, RefreshCcw, Activity, Clock, Hash, Layers, TrendingUp, ScatterChart as ScatterIcon, BarChart as BarChartIcon, Presentation } from 'lucide-react';
+import { RawRecord, StoppageType, InputMode } from '../types';
+import { 
+    calculateMetrics, 
+    calculateTimeBetweenFailures, 
+    calculateWeibull, 
+    calculateReliabilityAtTime,
+    calculatePDFAtTime,
+    calculateHazardAtTime,
+    calculateBLife,
+    exportChartAsPNG,
+    generateTbfHistogram
+} from '../utils/reliabilityMath';
+import { 
+    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+    LineChart, Line, Cell, AreaChart, Area, ReferenceLine, ScatterChart, Scatter
+} from 'recharts';
+import { 
+    RefreshCcw, Activity, Clock, Hash, TrendingUp, Zap, BarChart as BarChartIcon, 
+    LayoutGrid, HelpCircle, ShieldCheck, Target, Filter, AlertCircle, Layers, Camera, BarChart3
+} from 'lucide-react';
 
 interface DashboardProps {
-  data: RawRecord[];
+  box1Data: RawRecord[];
   inputMode: InputMode;
-  selectedAsset: string;
-  onAssetChange: (val: string) => void;
-  selectedMode: string;
-  onModeChange: (val: string) => void;
+  box1Filters: { asset: string; failureMode: string; delayType: string; hour: string; dayOfWeek: string };
+  setBox1Filter: (key: any, value: string) => void;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ 
-    data, 
-    inputMode,
-    selectedAsset,
-    onAssetChange,
-    selectedMode,
-    onModeChange
-}) => {
-  // --- Chart Config State ---
-  // Left Chart (Duration) Grouping
-  const [durationGroupBy, setDurationGroupBy] = useState<'mode' | 'asset'>('mode');
-  // Right Chart (Frequency) Grouping
-  const [frequencyGroupBy, setFrequencyGroupBy] = useState<'mode' | 'asset'>('mode');
+const CustomTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+        return (
+            <div className="bg-slate-900/90 backdrop-blur-md text-white p-4 rounded-2xl shadow-2xl text-[11px] border border-white/10 min-w-[160px] z-50 animate-in fade-in zoom-in-95 duration-200">
+                <p className="font-black border-b border-white/10 pb-2 mb-3 text-indigo-400 uppercase tracking-widest">{label}</p>
+                {payload.map((p: any, i: number) => (
+                    <div key={i} className="flex justify-between items-center gap-6 mb-2 last:mb-0">
+                        <div className="flex items-center gap-2">
+                            <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: p.color || p.fill }}></div>
+                            <span className="text-slate-400 font-bold">{p.name}:</span>
+                        </div>
+                        <span className="font-mono font-black text-white">
+                            {typeof p.value === 'number' ? p.value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : p.value}
+                        </span>
+                    </div>
+                ))}
+            </div>
+        );
+    }
+    return null;
+};
 
-  // --- Derived Lists for Dropdowns ---
-  const uniqueAssets = useMemo(() => {
-    return Array.from(new Set(data.map(r => r.location || 'Unknown'))).sort();
-  }, [data]);
+const StatCard = ({ title, value, unit, subValue, icon: Icon, color, explanation, description, isWarning }: { title: string, value: string, unit: string, subValue?: string, icon: any, color: string, explanation: string, description: string, isWarning?: boolean }) => {
+    const colorStyles: Record<string, string> = {
+        indigo: "text-indigo-600 bg-indigo-50 border-indigo-100 ring-indigo-500/10",
+        orange: "text-orange-600 bg-orange-50 border-orange-100 ring-orange-500/10",
+        emerald: "text-emerald-600 bg-emerald-50 border-emerald-100 ring-emerald-500/10",
+        purple: "text-purple-600 bg-purple-50 border-purple-100 ring-purple-100/10",
+        rose: "text-rose-600 bg-rose-50 border-rose-100 ring-rose-500/10",
+    };
+    const style = colorStyles[color] || colorStyles.indigo;
 
-  const uniqueModes = useMemo(() => {
-    return Array.from(new Set(data.map(r => r.failureMode || 'Uncategorized'))).sort();
-  }, [data]);
+    return (
+        <div className={`relative group overflow-visible bg-white p-6 rounded-[2rem] border transition-all duration-500 ring-1 ring-slate-950/[0.03] hover:z-30 ${isWarning ? 'border-rose-300 shadow-[0_0_25px_-5px_rgba(244,63,94,0.4)]' : 'border-slate-200 shadow-sm hover:shadow-2xl hover:-translate-y-1'}`}>
+            <div className="relative z-10 flex flex-col h-full">
+                <div className="flex items-center gap-4 mb-5">
+                    <div className={`p-3 rounded-2xl shadow-sm ${isWarning ? 'text-rose-600 bg-rose-50 border-rose-100' : style} transition-transform group-hover:scale-110 duration-500`}>
+                        <Icon size={24} />
+                    </div>
+                    <div className="relative">
+                        <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] cursor-help border-b border-dotted border-slate-300 pb-0.5 peer">{title}</h3>
+                        <p className="text-[10px] font-bold text-slate-500 leading-tight mt-1 uppercase">{explanation}</p>
+                        {/* Tooltip positioned below label */}
+                        <div className="absolute left-0 top-full mt-3 w-64 bg-slate-900/95 backdrop-blur-md text-white text-[10px] p-4 rounded-2xl shadow-2xl invisible peer-hover:visible z-50 leading-relaxed border border-white/10 animate-in fade-in slide-in-from-top-2 duration-200 pointer-events-none">
+                            <p className="font-black text-indigo-400 mb-1 uppercase tracking-widest">{title} Definition</p>
+                            <p className="text-slate-300 font-medium leading-relaxed">{description}</p>
+                        </div>
+                    </div>
+                </div>
+                <div className="mt-auto">
+                    <div className="flex items-baseline gap-2">
+                        <span className={`text-3xl font-black tracking-tighter uppercase ${isWarning ? 'text-rose-600' : 'text-slate-900'}`}>{value}</span>
+                        <span className="text-xs font-black text-slate-400 uppercase tracking-widest">{unit}</span>
+                    </div>
+                    {subValue && (
+                        <div className={`mt-4 flex items-center gap-2 py-1.5 px-3 rounded-full border w-fit ${isWarning ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-slate-100'}`}>
+                             <div className={`h-1.5 w-1.5 rounded-full animate-pulse ${isWarning ? 'bg-rose-500' : style.split(' ')[0]}`}></div>
+                             <span className={`text-[9px] font-black uppercase tracking-widest ${isWarning ? 'text-rose-600' : 'text-slate-500'}`}>{subValue}</span>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
 
-  // --- Filter Logic ---
+const Dashboard: React.FC<DashboardProps> = ({ box1Data, inputMode, box1Filters, setBox1Filter }) => {
+  const [dashboardTab, setDashboardTab] = useState<'system' | 'physics'>('system');
+
+  const assetList = useMemo(() => Array.from(new Set(box1Data.map(r => r.location))).filter(Boolean).sort(), [box1Data]);
+  const modeList = useMemo(() => Array.from(new Set(box1Data.map(r => r.failureMode))).filter(Boolean).sort(), [box1Data]);
+  const typeList = useMemo(() => Array.from(new Set(box1Data.map(r => r.delayType))).filter(Boolean).sort(), [box1Data]);
+
   const filteredData = useMemo(() => {
-    return data.filter(r => {
-      const matchAsset = selectedAsset === 'All' || r.location === selectedAsset;
-      const matchMode = selectedMode === 'All' || r.failureMode === selectedMode;
-      return matchAsset && matchMode;
+    return box1Data.filter(r => {
+      const matchAsset = box1Filters.asset === 'All' || r.location === box1Filters.asset;
+      const matchMode = box1Filters.failureMode === 'All' || r.failureMode === box1Filters.failureMode;
+      const matchType = box1Filters.delayType === 'All' || r.delayType === box1Filters.delayType;
+      return matchAsset && matchMode && matchType;
     });
-  }, [data, selectedAsset, selectedMode]);
+  }, [box1Data, box1Filters]);
 
-  // --- Real-time Calculations based on Filtered Data ---
-  const metrics = useMemo<ReliabilityMetrics>(() => {
-    return calculateMetrics(filteredData, inputMode);
-  }, [filteredData, inputMode]);
+  const metrics = useMemo(() => calculateMetrics(filteredData, inputMode), [filteredData, inputMode]);
+  const tbfData = useMemo(() => calculateTimeBetweenFailures(filteredData, inputMode), [filteredData, inputMode]);
+  const weibull = useMemo(() => calculateWeibull(tbfData), [tbfData]);
+  const b10Life = useMemo(() => calculateBLife(weibull.beta, weibull.eta, 0.1), [weibull]);
 
-  const tbfData = useMemo(() => {
-      return calculateTimeBetweenFailures(filteredData, inputMode);
-  }, [filteredData, inputMode]);
+  const patternDescription = useMemo(() => {
+    const beta = weibull.beta;
+    if (beta === 0) return { label: "NO DATA", desc: "Insufficient failure points to determine a physics pattern." };
+    if (beta < 0.9) return { 
+        label: "EARLY LIFE", 
+        desc: "Failures are occurring early. This usually indicates 'Infant Mortality' caused by poor installation, manufacturing defects, or commissioning errors." 
+    };
+    if (beta >= 0.9 && beta <= 1.2) return { 
+        label: "RANDOM RISK", 
+        desc: "Failures occur by pure chance, regardless of asset age. Strategic Note: Scheduled parts replacement is NOT effective for this pattern. Use condition monitoring instead." 
+    };
+    return { 
+        label: "WEAR-OUT", 
+        desc: "Age-Related failures. The asset is entering its wear-out phase. This pattern is well-suited for 'Scheduled Replacement' or 'Scheduled Restoration' strategies." 
+    };
+  }, [weibull.beta]);
 
-  const currentWeibull = useMemo(() => {
-      return calculateWeibull(tbfData);
+  const aggregateData = (groupBy: 'location' | 'failureMode', valueKey: 'duration' | 'count') => {
+      const agg: Record<string, number> = {};
+      filteredData.filter(r => r.type === StoppageType.Unplanned).forEach(r => {
+          const key = r[groupBy] || (groupBy === 'location' ? 'Unknown Asset' : 'Uncategorized');
+          const val = valueKey === 'count' ? 1 : r.durationMinutes / 60;
+          agg[key] = (agg[key] || 0) + val;
+      });
+      return Object.entries(agg).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 15);
+  };
+  
+  const tbfHistogramData = useMemo(() => {
+      const bins = generateTbfHistogram(tbfData);
+      return bins.map(bin => ({ name: bin.name, value: bin.count }));
   }, [tbfData]);
 
-  // --- Chart Data Preparation ---
+  const assetDowntime = useMemo(() => aggregateData('location', 'duration'), [filteredData]);
+  const assetFreq = useMemo(() => aggregateData('location', 'count'), [filteredData]);
+  const modeDowntime = useMemo(() => aggregateData('failureMode', 'duration'), [filteredData]);
+  const modeFreq = useMemo(() => aggregateData('failureMode', 'count'), [filteredData]);
 
-  // Helper to generate chart data
-  const generateChartData = (measure: 'duration' | 'frequency', groupBy: 'mode' | 'asset') => {
-    const aggregated: Record<string, number> = {};
-    
-    // We use filteredData here so the charts reflect the global selection
-    filteredData.filter(r => r.type === StoppageType.Unplanned).forEach(r => {
-        const key = groupBy === 'mode' ? (r.failureMode || 'Uncategorized') : (r.location || 'Unknown');
-        const val = measure === 'duration' ? r.durationMinutes : 1;
-        aggregated[key] = (aggregated[key] || 0) + val;
-    });
+  const physicsData = useMemo(() => {
+      if (weibull.beta === 0) return [];
+      const maxT = Math.min(weibull.eta * 2.5, 20000);
+      const step = maxT / 100;
+      const series = [];
+      for (let t = 0; t <= maxT; t += step) {
+          series.push({
+              t: Math.round(t),
+              reliability: calculateReliabilityAtTime(weibull.beta, weibull.eta, t),
+              pdf: calculatePDFAtTime(weibull.beta, weibull.eta, t),
+              hazard: calculateHazardAtTime(weibull.beta, weibull.eta, t)
+          });
+      }
+      return series;
+  }, [weibull]);
 
-    return Object.entries(aggregated)
-        .map(([name, value]) => ({ name, value }))
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 10); // Keep top 10
-  };
-
-  const durationData = useMemo(() => generateChartData('duration', durationGroupBy), [filteredData, durationGroupBy]);
-  const frequencyData = useMemo(() => generateChartData('frequency', frequencyGroupBy), [filteredData, frequencyGroupBy]);
-
-  // 3. Survival Curve
-  const survivalData = useMemo(() => {
-    if (currentWeibull.beta === 0 || currentWeibull.eta === 0) return [];
-    const maxT = Math.min(currentWeibull.eta * 2.5, 100000); 
-    const step = maxT / 60;
-    
-    const points = [];
-    for (let t = 0; t <= maxT; t += step) {
-        const reliability = Math.exp(-Math.pow(t / currentWeibull.eta, currentWeibull.beta));
-        points.push({ t: Math.round(t), reliability });
-    }
-    return points;
-  }, [currentWeibull]);
-
-  // 4. Hazard Rate Curve h(t)
-  const hazardData = useMemo(() => {
-    if (currentWeibull.beta === 0 || currentWeibull.eta === 0) return [];
-    const maxT = Math.min(currentWeibull.eta * 2.5, 100000);
-    const step = maxT / 60;
-    
-    const points = [];
-    // Start from step to avoid division by zero if t=0 and beta < 1
-    for (let t = step; t <= maxT; t += step) {
-        // h(t) = (beta/eta) * (t/eta)^(beta-1)
-        const h = (currentWeibull.beta / currentWeibull.eta) * Math.pow((t / currentWeibull.eta), currentWeibull.beta - 1);
-        points.push({ t: Math.round(t), h });
-    }
-    return points;
-  }, [currentWeibull]);
-
-  // 5. Probability Plot Data with Regression Line
-  const probPlotData = useMemo(() => {
-    if (!currentWeibull.points || currentWeibull.points.length === 0) {
-        return { points: [], lineData: [] };
-    }
-    
-    const minX = Math.min(...currentWeibull.points.map(p => p.x));
-    const maxX = Math.max(...currentWeibull.points.map(p => p.x));
-    
-    // y = beta*x - beta*ln(eta)
-    const intercept = -currentWeibull.beta * Math.log(currentWeibull.eta);
-    
-    const lineData = [
-        { x: minX, lineY: currentWeibull.beta * minX + intercept },
-        { x: maxX, lineY: currentWeibull.beta * maxX + intercept }
+  const weibullPlotData = useMemo(() => {
+    if (!weibull.points || weibull.points.length === 0) return { points: [], line: [] };
+    const minX = Math.min(...weibull.points.map(p => p.x)) - 0.5;
+    const maxX = Math.max(...weibull.points.map(p => p.x)) + 0.5;
+    const linePoints = [
+        { x: minX, y: weibull.beta * minX - (weibull.beta * Math.log(weibull.eta)) },
+        { x: maxX, y: weibull.beta * maxX - (weibull.beta * Math.log(weibull.eta)) }
     ];
-    
-    return { points: currentWeibull.points, lineData };
-  }, [currentWeibull]);
+    return {
+        points: weibull.points.map(p => ({ x: p.x, y: p.y, name: 'Failure Event' })),
+        line: linePoints
+    };
+  }, [weibull]);
 
-  // 6. Histogram Data (Distribution)
-  const histogramData = useMemo(() => {
-      return generateHistogram(tbfData, currentWeibull.beta, currentWeibull.eta);
-  }, [tbfData, currentWeibull]);
-
-
-  // --- Interaction Handlers ---
-  const handleChartClick = (data: any, groupBy: 'mode' | 'asset') => {
-      if (data && data.activePayload && data.activePayload.length > 0) {
-          const clickedName = data.activePayload[0].payload.name;
-          
-          if (groupBy === 'asset') {
-              onAssetChange(clickedName === selectedAsset ? 'All' : clickedName);
-          } else {
-              onModeChange(clickedName === selectedMode ? 'All' : clickedName);
-          }
-      }
+  const handleBarClick = (payload: any, filterKey: 'asset' | 'failureMode') => {
+      if (!payload || !payload.name) return;
+      const currentVal = (box1Filters as any)[filterKey];
+      const clickedVal = payload.name;
+      setBox1Filter(filterKey, clickedVal === currentVal ? 'All' : clickedVal);
   };
-
-  const getOpacity = (entryName: string, groupBy: 'mode' | 'asset') => {
-      if (groupBy === 'asset') {
-          return (selectedAsset === 'All' || selectedAsset === entryName) ? 1 : 0.3;
-      } else {
-          return (selectedMode === 'All' || selectedMode === entryName) ? 1 : 0.3;
-      }
-  };
-
-  const handleExportDashboardPPT = () => {
-    const pptx = new (window as any).PptxGenJS();
-    pptx.layout = 'LAYOUT_16x9';
-
-    // Slide 1: Title & KPIs
-    const slide1 = pptx.addSlide();
-    slide1.addText("Reliability Statistics Report", { x: 0.5, y: 0.5, fontSize: 24, bold: true, color: '363636' });
-    slide1.addText(`Asset: ${selectedAsset}, Failure Mode: ${selectedMode}`, { x: 0.5, y: 1.0, fontSize: 14, color: '666666' });
-    slide1.addText(`Generated: ${new Date().toLocaleDateString()}`, { x: 0.5, y: 1.3, fontSize: 12, color: '888888' });
-
-    // KPI Boxes
-    const kpiY = 2.5;
-    const kpiW = 2.2;
-    const kpiH = 1.2;
-    const margin = 0.2;
-
-    // MTBF
-    slide1.addShape(pptx.ShapeType.rect, { x: 0.5, y: kpiY, w: kpiW, h: kpiH, fill: 'EEF2FF', line: { color: 'C7D2FE' } });
-    slide1.addText("MTBF", { x: 0.5, y: kpiY + 0.1, w: kpiW, align: 'center', fontSize: 12, color: '4338CA', bold: true });
-    slide1.addText(`${metrics.mtbf.toFixed(1)} hrs`, { x: 0.5, y: kpiY + 0.5, w: kpiW, align: 'center', fontSize: 20, color: '312E81', bold: true });
-
-    // MTTR
-    slide1.addShape(pptx.ShapeType.rect, { x: 0.5 + kpiW + margin, y: kpiY, w: kpiW, h: kpiH, fill: 'FFF7ED', line: { color: 'FED7AA' } });
-    slide1.addText("MTTR", { x: 0.5 + kpiW + margin, y: kpiY + 0.1, w: kpiW, align: 'center', fontSize: 12, color: 'EA580C', bold: true });
-    slide1.addText(`${metrics.mttr.toFixed(1)} hrs`, { x: 0.5 + kpiW + margin, y: kpiY + 0.5, w: kpiW, align: 'center', fontSize: 20, color: '9A3412', bold: true });
-
-    // Availability
-    slide1.addShape(pptx.ShapeType.rect, { x: 0.5 + (kpiW + margin) * 2, y: kpiY, w: kpiW, h: kpiH, fill: 'ECFDF5', line: { color: 'A7F3D0' } });
-    slide1.addText("Availability", { x: 0.5 + (kpiW + margin) * 2, y: kpiY + 0.1, w: kpiW, align: 'center', fontSize: 12, color: '059669', bold: true });
-    slide1.addText(`${metrics.availability.toFixed(1)}%`, { x: 0.5 + (kpiW + margin) * 2, y: kpiY + 0.5, w: kpiW, align: 'center', fontSize: 20, color: '064E3B', bold: true });
-
-    // Beta
-    slide1.addShape(pptx.ShapeType.rect, { x: 0.5 + (kpiW + margin) * 3, y: kpiY, w: kpiW, h: kpiH, fill: 'F3F4F6', line: { color: 'E5E7EB' } });
-    slide1.addText("Weibull Beta", { x: 0.5 + (kpiW + margin) * 3, y: kpiY + 0.1, w: kpiW, align: 'center', fontSize: 12, color: '4B5563', bold: true });
-    slide1.addText(`${currentWeibull.beta.toFixed(2)}`, { x: 0.5 + (kpiW + margin) * 3, y: kpiY + 0.5, w: kpiW, align: 'center', fontSize: 20, color: '1F2937', bold: true });
-    slide1.addText(`Eta: ${currentWeibull.eta.toFixed(0)}`, { x: 0.5 + (kpiW + margin) * 3, y: kpiY + 0.9, w: kpiW, align: 'center', fontSize: 10, color: '6B7280' });
-
-
-    // Slide 2: Pareto Charts
-    if (durationData.length > 0 || frequencyData.length > 0) {
-        const slide2 = pptx.addSlide();
-        slide2.addText("Failure Analysis (Pareto)", { x: 0.5, y: 0.5, fontSize: 18, bold: true });
-
-        // Chart 1: Downtime
-        if (durationData.length > 0) {
-            slide2.addText("Total Downtime (Minutes)", { x: 0.5, y: 1.0, fontSize: 14 });
-            slide2.addChart(pptx.ChartType.bar, 
-                [{
-                    name: "Duration",
-                    labels: durationData.map(d => d.name),
-                    values: durationData.map(d => d.value)
-                }],
-                { x: 0.5, y: 1.5, w: 4.5, h: 4.5, barDir: 'col', chartColors: ['F43F5E'] }
-            );
-        }
-
-        // Chart 2: Frequency
-        if (frequencyData.length > 0) {
-            slide2.addText("Failure Frequency (Count)", { x: 5.5, y: 1.0, fontSize: 14 });
-             slide2.addChart(pptx.ChartType.bar, 
-                [{
-                    name: "Frequency",
-                    labels: frequencyData.map(d => d.name),
-                    values: frequencyData.map(d => d.value)
-                }],
-                { x: 5.5, y: 1.5, w: 4.5, h: 4.5, barDir: 'col', chartColors: ['6366F1'] }
-            );
-        }
-    }
-
-    // Slide 3: Reliability Curves
-    if (survivalData.length > 0 || hazardData.length > 0) {
-        const slide3 = pptx.addSlide();
-        slide3.addText("Reliability Characteristics", { x: 0.5, y: 0.5, fontSize: 18, bold: true });
-
-        // Survival
-        if (survivalData.length > 0) {
-            slide3.addText("Survival Probability R(t)", { x: 0.5, y: 1.0, fontSize: 14 });
-            // Downsample for PPT speed
-            const dsSurvival = survivalData.filter((_, i) => i % 5 === 0);
-            slide3.addChart(pptx.ChartType.line,
-                [{
-                    name: "Reliability",
-                    labels: dsSurvival.map(d => d.t.toString()),
-                    values: dsSurvival.map(d => d.reliability)
-                }],
-                { x: 0.5, y: 1.5, w: 9, h: 2.5, chartColors: ['059669'], showLegend: false }
-            );
-        }
-
-        // Hazard
-        if (hazardData.length > 0) {
-            slide3.addText("Hazard Rate h(t)", { x: 0.5, y: 4.2, fontSize: 14 });
-             const dsHazard = hazardData.filter((_, i) => i % 5 === 0);
-             slide3.addChart(pptx.ChartType.line,
-                [{
-                    name: "Hazard Rate",
-                    labels: dsHazard.map(d => d.t.toString()),
-                    values: dsHazard.map(d => d.h)
-                }],
-                { x: 0.5, y: 4.7, w: 9, h: 2.5, chartColors: ['DC2626'], showLegend: false }
-            );
-        }
-    }
-
-     // Slide 4: Weibull Plots
-    if (probPlotData.points && probPlotData.points.length > 0) {
-        const slide4 = pptx.addSlide();
-        slide4.addText("Advanced Weibull Analysis", { x: 0.5, y: 0.5, fontSize: 18, bold: true });
-        
-        // Probability Plot (Scatter)
-        slide4.addText("Weibull Probability Plot", { x: 0.5, y: 1.0, fontSize: 14 });
-        slide4.addChart(pptx.ChartType.scatter,
-            [
-                { name: "Failures", values: probPlotData.points.map(p => ({ x: p.x, y: p.y })) }
-            ],
-            { x: 0.5, y: 1.5, w: 4.5, h: 4.5, chartColors: ['4F46E5'] }
-        );
-
-        // Histogram
-         if (histogramData.length > 0) {
-            slide4.addText("Time-to-Failure Distribution", { x: 5.5, y: 1.0, fontSize: 14 });
-            slide4.addChart(pptx.ChartType.bar,
-                [{
-                    name: "Failures",
-                    labels: histogramData.map(d => d.mid.toFixed(0)),
-                    values: histogramData.map(d => d.count)
-                }],
-                { x: 5.5, y: 1.5, w: 4.5, h: 4.5, chartColors: ['93C5FD'] }
-            );
-        }
-    }
-
-    pptx.writeFile({ fileName: `Reliability_Stats_${selectedAsset}.pptx` });
-  };
+  
+  const systemCharts = [
+    { title: 'Asset Downtime (Hrs)', data: assetDowntime, icon: Activity, color: '#F43F5E', grad: 'colorDown', filterKey: 'asset' },
+    { title: 'Failure Intensity (Qty)', data: assetFreq, icon: Hash, color: '#6366F1', grad: 'colorFreq', filterKey: 'asset' },
+    { title: 'Failure Rate Distribution (TBF)', data: tbfHistogramData, icon: BarChart3, color: '#0ea5e9', grad: 'colorTbfHist', filterKey: null },
+    { title: 'Mode Downtime (Hrs)', data: modeDowntime, icon: BarChartIcon, color: '#F59E0B', grad: 'colorModeDown', filterKey: 'failureMode' },
+    { title: 'Mode Intensity (Qty)', data: modeFreq, icon: Hash, color: '#10B981', grad: 'colorModeFreq', filterKey: 'failureMode' }
+  ];
 
   return (
-    <div className="space-y-6">
-        {/* --- Filters Toolbar --- */}
-        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 flex flex-wrap items-center gap-4 md:gap-8 sticky top-0 z-20">
-            <div className="flex items-center gap-2 text-gray-700 font-medium">
-                <Filter size={20} className="text-indigo-600"/>
-                <span>Filters:</span>
+    <div className="space-y-10 animate-in fade-in duration-700 pb-20">
+        <div className="bg-white/80 backdrop-blur-2xl p-3 rounded-[2.5rem] shadow-2xl border border-white/50 flex flex-wrap gap-4 items-center justify-between sticky top-4 z-40 mx-2 ring-1 ring-slate-950/5">
+            <div className="flex bg-slate-100/60 p-1.5 rounded-2xl border border-slate-200/50">
+                <button onClick={() => setDashboardTab('system')} className={`flex items-center gap-3 px-8 py-3 rounded-[1.25rem] text-xs font-black transition-all duration-300 ${dashboardTab === 'system' ? 'bg-white shadow-xl text-indigo-600 ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-800'}`}>
+                    <LayoutGrid size={18} className={dashboardTab === 'system' ? 'animate-pulse' : ''} /> SYSTEM OVERVIEW
+                </button>
+                <button onClick={() => setDashboardTab('physics')} className={`flex items-center gap-3 px-8 py-3 rounded-[1.25rem] text-xs font-black transition-all duration-300 ${dashboardTab === 'physics' ? 'bg-white shadow-xl text-indigo-600 ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-800'}`}>
+                    <TrendingUp size={18} className={dashboardTab === 'physics' ? 'animate-pulse' : ''} /> RELIABILITY PHYSICS
+                </button>
             </div>
             
-            <div className="flex items-center gap-2">
-                <label className="text-xs text-gray-500 uppercase font-semibold">Asset:</label>
-                <select 
-                    value={selectedAsset}
-                    onChange={(e) => onAssetChange(e.target.value)}
-                    className={`bg-gray-50 border text-gray-900 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block w-48 p-2 transition ${selectedAsset !== 'All' ? 'border-indigo-500 bg-indigo-50 font-semibold' : 'border-gray-300'}`}
-                >
-                    <option value="All">All Assets</option>
-                    {uniqueAssets.map(a => <option key={a} value={a}>{a}</option>)}
-                </select>
-            </div>
-
-            <div className="flex items-center gap-2">
-                <label className="text-xs text-gray-500 uppercase font-semibold">Failure Mode:</label>
-                <select 
-                    value={selectedMode}
-                    onChange={(e) => onModeChange(e.target.value)}
-                    className={`bg-gray-50 border text-gray-900 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block w-48 p-2 transition ${selectedMode !== 'All' ? 'border-indigo-500 bg-indigo-50 font-semibold' : 'border-gray-300'}`}
-                >
-                    <option value="All">All Modes</option>
-                    {uniqueModes.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
-            </div>
-
-            <div className="ml-auto flex items-center gap-3">
-                <button 
-                    onClick={handleExportDashboardPPT}
-                    className="flex items-center gap-2 bg-orange-100 hover:bg-orange-200 text-orange-800 px-3 py-1.5 rounded-lg text-sm font-medium transition border border-orange-200"
-                    title="Export Dashboard to PowerPoint"
-                >
-                    <Presentation size={16} /> Export PPT
-                </button>
-                <button 
-                    onClick={() => { onAssetChange('All'); onModeChange('All'); }}
-                    className="flex items-center gap-1 text-sm text-gray-500 hover:text-indigo-600 transition"
-                >
-                    <RefreshCcw size={14} /> Reset
+            <div className="flex items-center gap-3 pr-4 overflow-x-auto no-scrollbar max-w-[60%]">
+                {[
+                    { key: 'asset', icon: Filter, options: assetList, label: 'Asset' },
+                    { key: 'delayType', icon: Layers, options: typeList, label: 'Type' },
+                    { key: 'failureMode', icon: Hash, options: modeList, label: 'Mode' }
+                ].map((item) => (
+                    <div key={item.key} className="flex items-center gap-2 bg-white px-4 py-2.5 rounded-2xl border border-slate-200 shadow-sm shrink-0 transition-all hover:border-indigo-300 focus-within:ring-2 focus-within:ring-indigo-100">
+                        <item.icon size={14} className="text-slate-400" />
+                        <select 
+                            value={(box1Filters as any)[item.key]} 
+                            onChange={(e) => setBox1Filter(item.key, e.target.value)}
+                            className="text-[10px] font-black uppercase outline-none bg-transparent min-w-[120px] cursor-pointer"
+                        >
+                            <option value="All">All {item.label}s</option>
+                            {item.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
+                    </div>
+                ))}
+                <button onClick={() => {setBox1Filter('asset', 'All'); setBox1Filter('failureMode', 'All'); setBox1Filter('delayType', 'All');}} className="p-3 rounded-2xl bg-slate-900 border border-slate-800 hover:bg-indigo-600 text-white transition-all shadow-lg shrink-0" title="Reset Filters">
+                    <RefreshCcw size={18}/>
                 </button>
             </div>
         </div>
 
-        {/* --- KPI Cards --- */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative overflow-hidden">
-                <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Mean Time Between Failures</p>
-                <div className="mt-2 flex items-baseline gap-1">
-                    <p className="text-3xl font-bold text-indigo-700">{metrics.mtbf.toFixed(1)}</p>
-                    <span className="text-sm text-gray-400">hours</span>
-                </div>
-                <div className="absolute top-0 right-0 p-4 opacity-10">
-                    <Activity size={48} className="text-indigo-600" />
-                </div>
-            </div>
-            
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative overflow-hidden">
-                <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Mean Time To Repair</p>
-                <div className="mt-2 flex items-baseline gap-1">
-                     <p className="text-3xl font-bold text-orange-600">{metrics.mttr.toFixed(1)}</p>
-                     <span className="text-sm text-gray-400">hours</span>
-                </div>
-                 <div className="absolute top-0 right-0 p-4 opacity-10">
-                    <RefreshCcw size={48} className="text-orange-600" />
-                </div>
-            </div>
-            
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative overflow-hidden">
-                <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Availability</p>
-                <p className="text-3xl font-bold text-emerald-600 mt-2">{metrics.availability.toFixed(1)}%</p>
-                <div className="w-full bg-gray-100 h-1.5 mt-3 rounded-full overflow-hidden">
-                    <div className="bg-emerald-500 h-full" style={{ width: `${Math.min(metrics.availability, 100)}%` }}></div>
-                </div>
-            </div>
-            
-             <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative overflow-hidden">
-                <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Reliability Shape (Beta)</p>
-                <div className="flex items-end gap-2 mt-2">
-                    <p className="text-3xl font-bold text-purple-600">{currentWeibull.beta.toFixed(2)}</p>
-                    <span className="text-xs text-gray-500 mb-1 px-2 py-0.5 bg-gray-100 rounded-full">
-                        {currentWeibull.beta < 1 ? 'Early Life' : currentWeibull.beta === 1 ? 'Random' : 'Wear Out'}
-                    </span>
-                </div>
-                <p className="text-xs text-gray-400 mt-2">Scale (Eta): {currentWeibull.eta.toFixed(0)} hrs</p>
-            </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 px-2">
+            <StatCard title="MTBF" explanation="Availability Lead" value={metrics.mtbf.toFixed(1)} unit="hrs" icon={Activity} color="indigo" description="Mean Time Between Failures. Average uptime between unplanned events. Formula: Total Uptime / Number of Failures." isWarning={metrics.mtbf > 0 && metrics.mtbf < 20} />
+            <StatCard title="MTTR" explanation="Recovery Efficiency" value={metrics.mttr.toFixed(1)} unit="hrs" icon={Clock} color="orange" description="Mean Time To Repair. Average time to restore functionality after a failure event. Formula: Total Downtime / Number of Failures." />
+            <StatCard title="Availability" explanation="Asset Utilization" value={metrics.availability.toFixed(1)} unit="%" icon={Zap} color="emerald" description="Percentage of time the asset was capable of performing its function. Formula: MTBF / (MTBF + MTTR)." isWarning={metrics.availability > 0 && metrics.availability < 85} />
+            <StatCard 
+                title="Pattern (β)" 
+                explanation={`Physics Beta: ${weibull.beta.toFixed(2)}`} 
+                value={patternDescription.label} 
+                unit="" 
+                subValue={`Eta (Scale): ${weibull.eta.toFixed(0)}h`} 
+                icon={TrendingUp} 
+                color="purple" 
+                description="Weibull Shape Parameter (Beta). β < 1: Early life failures (Infant Mortality); β = 1: Random failures; β > 1: Wear-out phase failures." 
+            />
+            <StatCard title="B10 Life" explanation="Risk Threshold" value={b10Life.toFixed(0)} unit="hrs" subValue={`Model R²: ${weibull.rSquared.toFixed(2)}`} icon={Target} color="rose" description="The age by which 10% of the population is expected to have failed. A key engineering benchmark for replacement scheduling." />
         </div>
 
-        {/* --- Charts Row 1 --- */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-             {/* LEFT CHART: Duration Analysis */}
-             <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 flex flex-col h-96">
-                <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                        <Clock size={18} className="text-rose-500"/> Total Downtime (Duration)
-                    </h3>
-                    <div className="flex bg-gray-100 p-0.5 rounded-lg">
-                        <button 
-                            onClick={() => setDurationGroupBy('mode')}
-                            className={`px-3 py-1 text-xs font-medium rounded-md transition flex items-center gap-1 ${durationGroupBy === 'mode' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
-                        >
-                            <Layers size={12} /> By Mode
-                        </button>
-                        <button 
-                            onClick={() => setDurationGroupBy('asset')}
-                            className={`px-3 py-1 text-xs font-medium rounded-md transition flex items-center gap-1 ${durationGroupBy === 'asset' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
-                        >
-                            <Layers size={12} /> By Asset
-                        </button>
+        <div className="space-y-12 px-2">
+            {dashboardTab === 'system' ? (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
+                    {systemCharts.map((chart, cIdx) => (
+                        <div key={chart.title} id={`chart-container-${cIdx}`} className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 h-[40rem] flex flex-col ring-1 ring-slate-950/[0.03] transition-all hover:shadow-2xl duration-500 group/chart">
+                            <div className="flex justify-between items-center mb-10">
+                                <h4 className="font-black text-slate-900 text-xs tracking-[0.25em] uppercase flex items-center gap-4">
+                                    <div className="p-2 rounded-xl bg-slate-50 border border-slate-100 shadow-sm"><chart.icon size={20} style={{ color: chart.color }}/></div>
+                                    {chart.title}
+                                </h4>
+                                <button onClick={() => exportChartAsPNG(`chart-container-${cIdx}`, chart.title.replace(/\s+/g, '_'))} className="p-3 bg-slate-50 text-slate-400 hover:text-indigo-600 rounded-2xl border border-slate-100 opacity-0 group-hover/chart:opacity-100 transition-all hover:shadow-md" title="Export Chart as PNG">
+                                    <Camera size={18}/>
+                                </button>
+                            </div>
+                            <div className="flex-1 min-h-0">
+                                <ResponsiveContainer>
+                                    <BarChart data={chart.data} margin={{ bottom: 80 }} barGap={0}>
+                                        <defs>
+                                            <linearGradient id={chart.grad} x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="0%" stopColor={chart.color} stopOpacity={1}/>
+                                                <stop offset="100%" stopColor={chart.color} stopOpacity={0.7}/>
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#f1f5f9"/>
+                                        <XAxis dataKey="name" stroke="#94a3b8" fontSize={10} fontWeight="900" axisLine={false} tickLine={false} angle={-45} textAnchor="end" interval={0} height={80} />
+                                        <YAxis stroke="#cbd5e1" fontSize={10} fontWeight="800" axisLine={false} tickLine={false}/>
+                                        <Tooltip content={<CustomTooltip/>}/>
+                                        <Bar 
+                                            dataKey="value" 
+                                            name="Measurement" 
+                                            radius={[10, 10, 0, 0]} 
+                                            cursor={chart.filterKey ? "pointer" : "default"}
+                                            onClick={chart.filterKey ? (payload) => handleBarClick(payload, chart.filterKey as any) : undefined}
+                                            animationDuration={1500}
+                                            animationBegin={cIdx * 200}
+                                        >
+                                            {chart.data.map((entry, index) => {
+                                                const isActive = chart.filterKey ? (box1Filters as any)[chart.filterKey] === entry.name : false;
+                                                const isAnyActive = chart.filterKey ? (box1Filters as any)[chart.filterKey] !== 'All' : false;
+                                                return (
+                                                    <Cell 
+                                                        key={`cell-${index}`} 
+                                                        fill={isActive ? '#4F46E5' : `url(#${chart.grad})`} 
+                                                        fillOpacity={!isAnyActive || isActive ? 1 : 0.2} 
+                                                        className="transition-all duration-500"
+                                                    />
+                                                );
+                                            })}
+                                        </Bar>
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <div className="grid grid-cols-1 gap-12">
+                    <div id="chart-weibull-prob" className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 h-[38rem] flex flex-col ring-1 ring-slate-950/[0.03] group/chart">
+                        <div className="flex justify-between items-center mb-10">
+                            <h4 className="font-black text-slate-900 text-xs tracking-[0.25em] uppercase flex items-center gap-4">
+                                <div className="p-2 rounded-xl bg-slate-50 border border-slate-100 shadow-sm"><Target size={20} className="text-indigo-600"/></div>
+                                Weibull Probability Plot
+                            </h4>
+                            <button onClick={() => exportChartAsPNG('chart-weibull-prob', 'Weibull_Probability_Plot')} className="p-3 bg-slate-50 text-slate-400 hover:text-indigo-600 rounded-2xl border border-slate-100 opacity-0 group-hover/chart:opacity-100 transition-all hover:shadow-md">
+                                <Camera size={18}/>
+                            </button>
+                        </div>
+                        <div className="flex-1 min-h-0">
+                            <ResponsiveContainer>
+                                <ScatterChart margin={{ top: 20, right: 30, bottom: 40, left: 10 }}>
+                                    <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#f1f5f9"/>
+                                    <XAxis type="number" dataKey="x" name="ln(Time)" stroke="#94a3b8" fontSize={10} fontWeight="800" axisLine={false} tickLine={false} label={{ value: 'NATURAL LOG OF OPERATING TIME', position: 'insideBottom', offset: -10, fontSize: 9, fontWeight: 900, fill: '#cbd5e1' }}/>
+                                    <YAxis type="number" dataKey="y" name="ln(-ln(1-F))" stroke="#94a3b8" fontSize={10} fontWeight="800" axisLine={false} tickLine={false}/>
+                                    <Tooltip content={<CustomTooltip/>}/>
+                                    <Scatter name="Failure Events" data={weibullPlotData.points} fill="#4F46E5" strokeWidth={2} stroke="white" />
+                                    <Scatter name="Statistical Model" data={weibullPlotData.line} line={{ stroke: '#F43F5E', strokeWidth: 3, strokeDasharray: '8 4' }} shape={() => null} />
+                                </ScatterChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+
+                    <div id="chart-reliability-r" className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 h-[38rem] flex flex-col ring-1 ring-slate-950/[0.03] group/chart">
+                        <div className="flex justify-between items-center mb-10">
+                            <h4 className="font-black text-slate-900 text-xs tracking-[0.25em] uppercase flex items-center gap-4">
+                                <div className="p-2 rounded-xl bg-slate-50 border border-slate-100 shadow-sm"><Activity size={20} className="text-emerald-500"/></div>
+                                Reliability Function R(t)
+                            </h4>
+                            <button onClick={() => exportChartAsPNG('chart-reliability-r', 'Reliability_Function')} className="p-3 bg-slate-50 text-slate-400 hover:text-indigo-600 rounded-2xl border border-slate-100 opacity-0 group-hover/chart:opacity-100 transition-all hover:shadow-md">
+                                <Camera size={18}/>
+                            </button>
+                        </div>
+                        <div className="flex-1 min-h-0">
+                            <ResponsiveContainer>
+                                <AreaChart data={physicsData}>
+                                    <defs>
+                                        <linearGradient id="colorReliability" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#10B981" stopOpacity={0.6}/>
+                                            <stop offset="95%" stopColor="#10B981" stopOpacity={0}/>
+                                        </linearGradient>
+                                    </defs>
+                                    <CartesianGrid strokeDasharray="4 4" stroke="#f1f5f9" vertical={false}/>
+                                    <XAxis dataKey="t" stroke="#94a3b8" fontSize={10} fontWeight="800" axisLine={false} tickLine={false}/>
+                                    <YAxis domain={[0, 1]} stroke="#94a3b8" fontSize={10} fontWeight="800" axisLine={false} tickLine={false} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}/>
+                                    <Tooltip content={<CustomTooltip/>}/>
+                                    <Area type="monotone" dataKey="reliability" name="Reliability" stroke="#10B981" strokeWidth={5} fillOpacity={1} fill="url(#colorReliability)" animationDuration={2000} />
+                                    <ReferenceLine x={weibull.eta} stroke="#6366f1" strokeDasharray="10 5" strokeWidth={2} label={{ position: 'top', value: 'Characteristic Life (η)', fill: '#6366f1', fontSize: 10, fontWeight: 900 }} />
+                                </AreaChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+
+                    <div id="chart-pdf-density" className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 h-[38rem] flex flex-col ring-1 ring-slate-950/[0.03] group/chart">
+                        <div className="flex justify-between items-center mb-10">
+                            <h4 className="font-black text-slate-900 text-xs tracking-[0.25em] uppercase flex items-center gap-4">
+                                <div className="p-2 rounded-xl bg-slate-50 border border-slate-100 shadow-sm"><TrendingUp size={20} className="text-amber-500"/></div>
+                                Probability Density Function f(t)
+                            </h4>
+                            <button onClick={() => exportChartAsPNG('chart-pdf-density', 'Probability_Density_Function')} className="p-3 bg-slate-50 text-slate-400 hover:text-indigo-600 rounded-2xl border border-slate-100 opacity-0 group-hover/chart:opacity-100 transition-all hover:shadow-md">
+                                <Camera size={18}/>
+                            </button>
+                        </div>
+                        <div className="flex-1 min-h-0">
+                            <ResponsiveContainer>
+                                <AreaChart data={physicsData}>
+                                    <defs>
+                                        <linearGradient id="colorPDF_Grad" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.6}/>
+                                            <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                                        </linearGradient>
+                                    </defs>
+                                    <CartesianGrid strokeDasharray="4 4" stroke="#f1f5f9" vertical={false}/>
+                                    <XAxis dataKey="t" stroke="#94a3b8" fontSize={10} fontWeight="800" axisLine={false} tickLine={false}/>
+                                    <YAxis stroke="#94a3b8" fontSize={10} fontWeight="800" axisLine={false} tickLine={false} hide />
+                                    <Tooltip content={<CustomTooltip/>}/>
+                                    <Area type="monotone" dataKey="pdf" name="Failure Density" stroke="#f59e0b" strokeWidth={5} fillOpacity={1} fill="url(#colorPDF_Grad)" animationDuration={2000} />
+                                </AreaChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+
+                    <div id="chart-hazard-rate" className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 h-[38rem] flex flex-col ring-1 ring-slate-950/[0.03] group/chart">
+                        <div className="flex justify-between items-center mb-10">
+                            <h4 className="font-black text-slate-900 text-xs tracking-[0.25em] uppercase flex items-center gap-4">
+                                <div className="p-2 rounded-xl bg-slate-50 border border-slate-100 shadow-sm"><Zap size={20} className="text-rose-600"/></div>
+                                Hazard Rate λ(t)
+                            </h4>
+                            <button onClick={() => exportChartAsPNG('chart-hazard-rate', 'Hazard_Rate')} className="p-3 bg-slate-50 text-slate-400 hover:text-indigo-600 rounded-2xl border border-slate-100 opacity-0 group-hover/chart:opacity-100 transition-all hover:shadow-md">
+                                <Camera size={18}/>
+                            </button>
+                        </div>
+                        <div className="flex-1 min-h-0">
+                            <ResponsiveContainer>
+                                <LineChart data={physicsData}>
+                                    <CartesianGrid strokeDasharray="4 4" stroke="#f1f5f9" vertical={false}/>
+                                    <XAxis dataKey="t" stroke="#94a3b8" fontSize={10} fontWeight="800" axisLine={false} tickLine={false}/>
+                                    <YAxis stroke="#94a3b8" fontSize={10} fontWeight="800" axisLine={false} tickLine={false}/>
+                                    <Tooltip content={<CustomTooltip/>}/>
+                                    <Line type="monotone" dataKey="hazard" name="Instantaneous Hazard" stroke="#f43f5e" strokeWidth={6} dot={false} animationDuration={2000} />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        </div>
                     </div>
                 </div>
-                
-                <div className="flex-1 min-h-0">
-                    {durationData.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                            <BarChart 
-                                data={durationData} 
-                                layout="vertical" 
-                                margin={{ top: 5, right: 30, left: 40, bottom: 5 }}
-                                onClick={(data) => handleChartClick(data, durationGroupBy)}
-                            >
-                                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e5e7eb" />
-                                <XAxis type="number" tick={{fontSize: 12}} />
-                                <YAxis 
-                                    dataKey="name" 
-                                    type="category" 
-                                    width={120} 
-                                    tick={{fontSize: 11, fill: '#374151'}} 
-                                    interval={0}
-                                />
-                                <Tooltip 
-                                    cursor={{fill: '#fff1f2', opacity: 0.5}}
-                                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                                    formatter={(val: number) => [`${val.toFixed(0)} min`, 'Total Downtime']} 
-                                />
-                                <Bar 
-                                    dataKey="value" 
-                                    radius={[0, 4, 4, 0]} 
-                                    barSize={20}
-                                    className="cursor-pointer"
-                                >
-                                    {durationData.map((entry, index) => (
-                                        <Cell 
-                                            key={`cell-${index}`} 
-                                            fill="#f43f5e" 
-                                            fillOpacity={getOpacity(entry.name, durationGroupBy)}
-                                        />
-                                    ))}
-                                </Bar>
-                            </BarChart>
-                        </ResponsiveContainer>
-                    ) : (
-                        <div className="h-full flex items-center justify-center text-gray-400 text-sm bg-gray-50 rounded">
-                            No data for current filters
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            {/* RIGHT CHART: Frequency Analysis */}
-            <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 flex flex-col h-96">
-                <div className="flex justify-between items-center mb-4">
-                     <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                        <Hash size={18} className="text-indigo-500"/> Failure Frequency
-                    </h3>
-                    <div className="flex bg-gray-100 p-0.5 rounded-lg">
-                        <button 
-                            onClick={() => setFrequencyGroupBy('mode')}
-                            className={`px-3 py-1 text-xs font-medium rounded-md transition flex items-center gap-1 ${frequencyGroupBy === 'mode' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
-                        >
-                            <Layers size={12} /> By Mode
-                        </button>
-                        <button 
-                            onClick={() => setFrequencyGroupBy('asset')}
-                            className={`px-3 py-1 text-xs font-medium rounded-md transition flex items-center gap-1 ${frequencyGroupBy === 'asset' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
-                        >
-                            <Layers size={12} /> By Asset
-                        </button>
-                    </div>
-                </div>
-
-                <div className="flex-1 min-h-0">
-                    {frequencyData.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                            <BarChart 
-                                data={frequencyData} 
-                                margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-                                onClick={(data) => handleChartClick(data, frequencyGroupBy)}
-                            >
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                                <XAxis 
-                                    dataKey="name" 
-                                    tick={{fontSize: 11, fill: '#6b7280'}} 
-                                    interval={0}
-                                    angle={-45}
-                                    textAnchor="end"
-                                    height={60}
-                                />
-                                <YAxis tick={{fontSize: 12, fill: '#6b7280'}} allowDecimals={false}/>
-                                <Tooltip 
-                                    cursor={{fill: '#e0e7ff', opacity: 0.5}}
-                                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                                    formatter={(val: number) => [val, 'Occurrences']}
-                                />
-                                <Bar 
-                                    dataKey="value" 
-                                    radius={[4, 4, 0, 0]}
-                                    className="cursor-pointer"
-                                >
-                                    {frequencyData.map((entry, index) => (
-                                        <Cell 
-                                            key={`cell-${index}`} 
-                                            fill={index % 2 === 0 ? '#6366f1' : '#818cf8'} 
-                                            fillOpacity={getOpacity(entry.name, frequencyGroupBy)}
-                                        />
-                                    ))}
-                                </Bar>
-                            </BarChart>
-                        </ResponsiveContainer>
-                    ) : (
-                        <div className="h-full flex items-center justify-center text-gray-400 text-sm bg-gray-50 rounded">
-                            No records found
-                        </div>
-                    )}
-                </div>
-            </div>
-        </div>
-
-        {/* --- Charts Row 2: Reliability Curves --- */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Survival Probability */}
-            <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-80">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <Activity size={18} className="text-green-600"/> Reliability Survival Curve
-                </h3>
-                <div className="h-full pb-6">
-                    {survivalData.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={survivalData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                                <XAxis 
-                                    dataKey="t" 
-                                    label={{ value: 'Hours', position: 'insideBottomRight', offset: -5, fontSize: 12 }} 
-                                    tick={{fontSize: 12}}
-                                />
-                                <YAxis 
-                                    domain={[0, 1]} 
-                                    label={{ value: 'R(t)', angle: -90, position: 'insideLeft', fontSize: 12 }} 
-                                    tick={{fontSize: 12}}
-                                />
-                                <Tooltip 
-                                    formatter={(val: number) => [(val*100).toFixed(1) + '%', 'Survival Probability']}
-                                    labelFormatter={(t) => `${t} Hours`}
-                                />
-                                <Line 
-                                    type="monotone" 
-                                    dataKey="reliability" 
-                                    stroke="#059669" 
-                                    strokeWidth={3} 
-                                    dot={false} 
-                                />
-                            </LineChart>
-                        </ResponsiveContainer>
-                    ) : (
-                        <div className="h-full flex flex-col items-center justify-center text-gray-400 bg-gray-50 rounded">
-                            <p>Insufficient data for Survival plot</p>
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            {/* Hazard Rate (Bathtub) */}
-            <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-80">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <TrendingUp size={18} className="text-red-600"/> Hazard Rate (Failure Rate)
-                </h3>
-                <div className="h-full pb-6">
-                    {hazardData.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={hazardData} margin={{ top: 5, right: 30, left: 30, bottom: 5 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                                <XAxis 
-                                    dataKey="t" 
-                                    label={{ value: 'Hours', position: 'insideBottomRight', offset: -5, fontSize: 12 }} 
-                                    tick={{fontSize: 12}}
-                                />
-                                <YAxis 
-                                    label={{ value: 'h(t)', angle: -90, position: 'insideLeft', fontSize: 12 }} 
-                                    tick={{fontSize: 12}}
-                                />
-                                <Tooltip 
-                                    formatter={(val: number) => [val.toExponential(4), 'Hazard Rate']}
-                                    labelFormatter={(t) => `${t} Hours`}
-                                />
-                                <Line 
-                                    type="monotone" 
-                                    dataKey="h" 
-                                    stroke="#dc2626" 
-                                    strokeWidth={2} 
-                                    dot={false} 
-                                />
-                            </LineChart>
-                        </ResponsiveContainer>
-                    ) : (
-                        <div className="h-full flex flex-col items-center justify-center text-gray-400 bg-gray-50 rounded">
-                            <p>Insufficient data for Hazard Rate plot</p>
-                        </div>
-                    )}
-                </div>
-            </div>
-        </div>
-
-        {/* --- Charts Row 3: Advanced Analytics --- */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Probability Plot */}
-            <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-[400px]">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <ScatterIcon size={18} className="text-purple-600"/> Weibull Probability Plot
-                </h3>
-                <div className="h-full pb-6">
-                    {probPlotData.points && probPlotData.points.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                            <ComposedChart margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                                <CartesianGrid strokeDasharray="3 3" />
-                                <XAxis 
-                                    dataKey="x" 
-                                    type="number" 
-                                    name="ln(t)" 
-                                    label={{ value: 'ln(Time)', position: 'insideBottom', offset: -10 }}
-                                    domain={['auto', 'auto']}
-                                />
-                                <YAxis 
-                                    dataKey="y" 
-                                    type="number" 
-                                    name="ln(-ln(1-R))" 
-                                    label={{ value: 'ln(-ln(1-Rank))', angle: -90, position: 'insideLeft' }}
-                                    domain={['auto', 'auto']}
-                                />
-                                <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-                                <Legend />
-                                {/* Regression Line */}
-                                <Scatter 
-                                    name="Fit Line" 
-                                    data={probPlotData.lineData} 
-                                    line={{ stroke: '#9333ea', strokeWidth: 2, strokeDasharray: '5 5' }} 
-                                    shape={<></>} // Hide dots for the line
-                                    legendType="line"
-                                />
-                                {/* Failure Data Points */}
-                                <Scatter 
-                                    name="Failure Data" 
-                                    data={probPlotData.points} 
-                                    fill="#4f46e5" 
-                                    shape="circle"
-                                />
-                            </ComposedChart>
-                        </ResponsiveContainer>
-                    ) : (
-                        <div className="h-full flex flex-col items-center justify-center text-gray-400 bg-gray-50 rounded">
-                            <p>Insufficient data (Need 3+ points)</p>
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            {/* Distribution Histogram */}
-            <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-[400px]">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <BarChartIcon size={18} className="text-blue-600"/> Time-to-Failure Distribution
-                </h3>
-                 <div className="h-full pb-6">
-                    {histogramData.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
-                            <ComposedChart data={histogramData} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-                                <CartesianGrid strokeDasharray="3 3" />
-                                <XAxis 
-                                    dataKey="mid" 
-                                    label={{ value: 'Time Between Failures (Hours)', position: 'insideBottom', offset: -10 }}
-                                    tickFormatter={(val) => val.toFixed(0)}
-                                />
-                                <YAxis 
-                                    yAxisId="left"
-                                    label={{ value: 'Frequency', angle: -90, position: 'insideLeft' }}
-                                />
-                                <YAxis 
-                                    yAxisId="right" 
-                                    orientation="right" 
-                                    hide={true} // Hidden Y axis for the PDF just to scale it reasonably if needed, but here we scaled PDF to count in logic
-                                />
-                                <Tooltip 
-                                    labelFormatter={(val) => `~${Number(val).toFixed(0)} Hours`}
-                                    formatter={(value: number, name: string) => [
-                                        name === 'pdf' ? value.toFixed(2) : value, 
-                                        name === 'pdf' ? 'Theoretical Fit (Scaled)' : 'Actual Failures'
-                                    ]}
-                                />
-                                <Legend />
-                                <Bar 
-                                    yAxisId="left"
-                                    dataKey="count" 
-                                    name="Actual Failures" 
-                                    fill="#93c5fd" 
-                                    opacity={0.8}
-                                    barSize={30}
-                                />
-                                <Line 
-                                    yAxisId="left"
-                                    type="monotone" 
-                                    dataKey="pdf" 
-                                    name="Weibull Fit" 
-                                    stroke="#2563eb" 
-                                    strokeWidth={3} 
-                                    dot={false} 
-                                />
-                            </ComposedChart>
-                        </ResponsiveContainer>
-                    ) : (
-                        <div className="h-full flex flex-col items-center justify-center text-gray-400 bg-gray-50 rounded">
-                            <p>Insufficient data for Histogram</p>
-                        </div>
-                    )}
-                </div>
-            </div>
+            )}
         </div>
     </div>
   );

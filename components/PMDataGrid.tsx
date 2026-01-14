@@ -1,379 +1,242 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { PMRecord } from '../types';
-import { Trash2, Plus, ArrowUpDown, ArrowUp, ArrowDown, Wand2, Loader2, Copy, Check, Sparkles, Briefcase, Activity } from 'lucide-react';
+
+import React, { useState, useMemo } from 'react';
+import { PMRecord, SavedPMPlan } from '../types';
+import { Trash2, Plus, ArrowUpDown, Loader2, Sparkles, Hash, Users, Layers, Search, Filter, Briefcase, CalendarClock, Target, Zap, Activity } from 'lucide-react';
 
 interface PMDataGridProps {
-  title?: string;
   data: PMRecord[];
-  onUpdate: (data: PMRecord[]) => void;
-  onAutoAssignTrades?: () => void;
-  loadingAI?: boolean;
+  setData: (data: PMRecord[]) => void;
   enableCopy?: boolean;
-  externalAssetFilter?: string;
-  externalTradeFilter?: string;
-  externalFreqFilter?: string;
-  externalTypeFilter?: string;
-  externalCriticalityFilter?: string;
-  onGlobalFilterChange?: (key: 'asset' | 'trade' | 'frequency' | 'executorType' | 'criticality', value: string) => void;
+  loadingAI: boolean;
+  enrichingField?: string | null;
+  onEnrich?: (field: 'trade' | 'frequency' | 'taskType' | 'shutdownRequired') => void;
+  title?: string;
+  filters?: { asset: string; trade: string; frequency: string; executorType: string; criticality: string; strategy?: string; state?: string };
+  onGlobalFilterChange?: (key: string, value: string) => void;
+  savedPlans?: SavedPMPlan[];
+  onSavePlan?: () => void;
+  onLoadPlan?: (id: string) => void;
+  onDeletePlan?: (id: string) => void;
 }
 
 const PMDataGrid: React.FC<PMDataGridProps> = ({ 
-    title = "PM Editor", 
-    data, 
-    onUpdate, 
-    onAutoAssignTrades, 
-    loadingAI = false, 
-    enableCopy = false,
-    externalAssetFilter,
-    externalTradeFilter,
-    externalFreqFilter,
-    externalTypeFilter,
-    externalCriticalityFilter,
-    onGlobalFilterChange
+    data, setData, enableCopy, loadingAI, enrichingField, onEnrich, title, 
+    filters, onGlobalFilterChange,
+    savedPlans, onSavePlan, onLoadPlan, onDeletePlan
 }) => {
-  const [filters, setFilters] = useState<Record<string, string>>({});
-  const [sortConfig, setSortConfig] = useState<{ key: keyof PMRecord | string | null, direction: 'asc' | 'desc' }>({ key: null, direction: 'asc' });
-  const [copied, setCopied] = useState(false);
+  const [localFilters, setLocalFilters] = useState<Record<string, string>>({});
+  const [sortConfig, setSortConfig] = useState<{ key: keyof PMRecord | null, direction: 'asc' | 'desc' }>({ key: null, direction: 'asc' });
 
-  // Sync external filters (from Dashboard/App) to local state
-  useEffect(() => {
-      setFilters(prev => ({
-          ...prev,
-          asset: externalAssetFilter === 'All' ? '' : (externalAssetFilter || ''),
-          trade: externalTradeFilter === 'All' ? '' : (externalTradeFilter || ''),
-          frequency: externalFreqFilter === 'All' ? '' : (externalFreqFilter || ''),
-          executorType: externalTypeFilter === 'All' ? '' : (externalTypeFilter || ''),
-          criticality: externalCriticalityFilter === 'All' ? '' : (externalCriticalityFilter || '')
-      }));
-  }, [externalAssetFilter, externalTradeFilter, externalFreqFilter, externalTypeFilter, externalCriticalityFilter]);
-
-  const handleDelete = (id: string) => {
-    onUpdate(data.filter(r => r.id !== id));
-  };
-
-  const handleChange = (id: string, field: keyof PMRecord, value: any) => {
-    const newData = data.map(r => r.id === id ? { ...r, [field]: value } : r);
-    onUpdate(newData);
-  };
+  const handleDelete = (id: string) => setData(data.filter(r => r.id !== id));
+  const handleChange = (id: string, field: keyof PMRecord, value: any) => setData(data.map(r => r.id === id ? { ...r, [field]: value } : r));
 
   const handleAdd = () => {
     const newRecord: PMRecord = {
       id: `new-pm-${Date.now()}`,
-      asset: externalAssetFilter && externalAssetFilter !== 'All' ? externalAssetFilter : 'New Asset',
-      taskDescription: 'New Maintenance Task',
-      frequency: '1',
+      asset: filters && filters.asset !== 'All' ? filters.asset : '',
+      taskDescription: '',
+      frequency: '',
       trade: '',
-      estimatedDuration: 1, 
+      estimatedDuration: 0, 
       shutdownRequired: false,
-      numberOfExecutors: 1,
+      numberOfExecutors: 0,
       executorType: 'Internal',
-      origin: 'New',
+      origin: 'Current',
       criticality: 'Medium',
-      taskType: 'TBM'
+      taskType: 'Time Based'
     };
-    onUpdate([newRecord, ...data]);
-  };
-
-  const handleClear = () => {
-      if(confirm('Clear all PM tasks?')) onUpdate([]);
-  };
-
-  const handleSort = (key: keyof PMRecord) => {
-    let direction: 'asc' | 'desc' = 'asc';
-    if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
-    setSortConfig({ key, direction });
+    setData([newRecord, ...data]);
   };
 
   const handleFilterChange = (key: string, value: string) => {
-      setFilters(prev => ({ ...prev, [key]: value }));
-      
-      if (onGlobalFilterChange) {
-          const globalValue = value === '' ? 'All' : value;
-          if (key === 'asset') onGlobalFilterChange('asset', globalValue);
-          if (key === 'trade') onGlobalFilterChange('trade', globalValue);
-          if (key === 'frequency') onGlobalFilterChange('frequency', globalValue);
-          if (key === 'executorType') onGlobalFilterChange('executorType', globalValue);
-          if (key === 'criticality') onGlobalFilterChange('criticality', globalValue);
+      setLocalFilters(prev => ({ ...prev, [key]: value }));
+      const globalKeyMap: Record<string, string> = {
+          asset: 'asset',
+          trade: 'trade',
+          frequency: 'frequency',
+          taskType: 'strategy',
+          shutdownRequired: 'state'
+      };
+      if (globalKeyMap[key] && onGlobalFilterChange) {
+          onGlobalFilterChange(globalKeyMap[key], value || 'All');
       }
   };
 
   const getUniqueValues = (key: keyof PMRecord) => {
-    const values = Array.from(new Set(data.map(r => String(r[key] || '').trim()))).filter(v => v !== '');
-    // Sort numeric values properly if frequency
-    if (key === 'frequency') {
-        return values.sort((a: string, b: string) => parseFloat(a) - parseFloat(b));
-    }
-    return values.sort();
+    if (key === 'shutdownRequired') return ['Shutdown', 'Running'];
+    const values = Array.from(new Set(data.map(r => r[key]))).filter(v => v !== undefined && v !== null && v !== '');
+    return values.sort((a, b) => {
+        if (typeof a === 'number' && typeof b === 'number') return a - b;
+        return String(a).localeCompare(String(b));
+    }).map(v => String(v));
   };
 
   const processedData = useMemo(() => {
     let result = [...data];
-    
-    // 1. Column Specific Filtering
-    Object.keys(filters).forEach(key => {
-        const filterValue = filters[key].toLowerCase();
-        if (filterValue) {
-            result = result.filter(r => {
-                const cellValue = String(r[key as keyof PMRecord] || '').toLowerCase();
-                const isDropdown = ['asset', 'frequency', 'trade', 'executorType', 'criticality', 'taskType'].includes(key);
-                return isDropdown ? cellValue === filterValue : cellValue.includes(filterValue);
-            });
+    Object.keys(localFilters).forEach(key => {
+        const val = localFilters[key];
+        if (!val || val === '' || val === 'All') return;
+
+        if (key === 'shutdownRequired') {
+            const wantShutdown = val === 'Shutdown';
+            result = result.filter(r => r.shutdownRequired === wantShutdown);
+        } else if (key === 'taskDescription') {
+            const searchVal = val.toLowerCase();
+            result = result.filter(r => String(r.taskDescription || '').toLowerCase().includes(searchVal));
+        } else {
+            result = result.filter(r => String(r[key as keyof PMRecord] || '') === val);
         }
     });
 
-    // 2. Sort
     if (sortConfig.key) {
         result.sort((a: any, b: any) => {
-            let valA = a[sortConfig.key!];
-            let valB = b[sortConfig.key!];
-            if (typeof valA === 'string') { valA = valA.toLowerCase(); valB = valB.toLowerCase(); }
-            if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
-            if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
-            return 0;
+            const valA = a[sortConfig.key!];
+            const valB = b[sortConfig.key!];
+            return (valA < valB ? -1 : 1) * (sortConfig.direction === 'asc' ? 1 : -1);
         });
     }
     return result;
-  }, [data, filters, sortConfig]);
+  }, [data, localFilters, sortConfig]);
 
-  const handleCopyTable = () => {
-      const headers = ['Asset', 'Description', 'Interval(M)', 'Trade', 'Executors', 'Type', 'Est.Hours', 'Shutdown?', 'Source', 'Criticality', 'Strategy'];
-      const rows = processedData.map(r => [
-          r.asset,
-          r.taskDescription,
-          r.frequency,
-          r.trade,
-          r.numberOfExecutors,
-          r.executorType,
-          r.estimatedDuration,
-          r.shutdownRequired ? 'Yes' : 'No',
-          r.origin || 'N/A',
-          r.criticality || 'Medium',
-          r.taskType || 'TBM'
-      ]);
-      const tsv = [headers.join('\t'), ...rows.map(row => row.join('\t'))].join('\n');
-      navigator.clipboard.writeText(tsv).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-      });
-  };
-
-  const ColumnHeader = ({ label, columnKey, width }: { label: string, columnKey: keyof PMRecord, width?: string }) => {
-      const isDropdown = ['asset', 'frequency', 'trade', 'executorType', 'criticality', 'taskType'].includes(columnKey);
+  const ColumnHeader = ({ label, col, widthClass, icon: Icon }: { label: string, col: keyof PMRecord, widthClass?: string, icon?: any }) => {
+      const val = localFilters[col] || '';
       return (
-        <th className={`px-4 py-3 align-top bg-gray-100 border-b border-gray-200 ${width || ''}`}>
+        <th className={`px-4 py-4 align-top bg-slate-50 border-b border-slate-200 ${widthClass || ''}`}>
             <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-1 cursor-pointer hover:text-emerald-600 select-none" onClick={() => handleSort(columnKey)}>
-                    <span className="font-semibold">{label}</span>
-                    {sortConfig.key === columnKey ? (
-                        sortConfig.direction === 'asc' ? <ArrowUp size={14}/> : <ArrowDown size={14}/>
-                    ) : <ArrowUpDown size={14} className="opacity-30"/>}
+                <div 
+                    className="flex items-center gap-1 cursor-pointer hover:text-indigo-600 select-none text-[10px] font-black uppercase tracking-wider text-slate-400 group"
+                    onClick={() => setSortConfig({ key: col, direction: sortConfig.key === col && sortConfig.direction === 'asc' ? 'desc' : 'asc' })}
+                >
+                    {Icon && <Icon size={12} className="shrink-0" />}
+                    {label}
+                    <ArrowUpDown size={12} className={`shrink-0 transition-opacity ${sortConfig.key === col ? 'opacity-100' : 'opacity-0 group-hover:opacity-30'}`} />
                 </div>
-                {isDropdown ? (
-                    <select
-                        value={filters[columnKey] || ''}
-                        onChange={(e) => handleFilterChange(columnKey, e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-full text-xs px-2 py-1.5 rounded border border-gray-300 focus:ring-1 focus:ring-emerald-500 bg-white"
-                    >
-                        <option value="">All</option>
-                        {getUniqueValues(columnKey).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                    </select>
+                {col === 'taskDescription' ? (
+                    <div className="relative">
+                        <input value={val} onChange={e => handleFilterChange(col, e.target.value)} placeholder="Search..." className="w-full text-[10px] font-bold py-1.5 px-2 pr-7 rounded-lg border border-slate-200 bg-white outline-none focus:ring-1 focus:ring-indigo-500 transition-all shadow-sm"/>
+                        <Search size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 pointer-events-none" />
+                    </div>
                 ) : (
-                    <input 
-                        type="text" placeholder="Filter..."
-                        value={filters[columnKey] || ''}
-                        onChange={(e) => handleFilterChange(columnKey, e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-full text-xs px-2 py-1 rounded border border-gray-300 focus:ring-1 focus:ring-emerald-500"
-                    />
+                    <div className="relative group/sel">
+                        <select value={val} onChange={e => handleFilterChange(col, e.target.value)} className={`w-full text-[10px] font-bold uppercase py-1.5 px-2 rounded-lg border appearance-none outline-none focus:ring-1 focus:ring-indigo-500 transition-all shadow-sm cursor-pointer truncate pr-6 ${val ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-600'}`}>
+                            <option value="">All {label}</option>
+                            {getUniqueValues(col).map(v => <option key={v} value={v}>{v}</option>)}
+                        </select>
+                        <Filter size={10} className={`absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none ${val ? 'text-indigo-400' : 'text-slate-300'}`} />
+                    </div>
                 )}
             </div>
         </th>
       );
   };
 
-  return (
-    <div className="bg-white rounded-lg shadow border border-gray-200 flex flex-col h-full">
-      <div className="p-4 border-b border-gray-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-gray-50">
-        <div className="flex items-center gap-4">
-            <h3 className="font-semibold text-gray-700 flex items-center gap-2">
-                {title} <span className="text-xs font-normal text-gray-500">({processedData.length} tasks)</span>
-            </h3>
-            {externalAssetFilter && externalAssetFilter !== 'All' && (
-                <span className="text-xs bg-emerald-50 text-emerald-700 px-2 py-1 rounded border border-emerald-100">
-                    Filtered
-                </span>
-            )}
-        </div>
-        
-        <div className="flex items-center gap-2">
-            <div className="hidden lg:flex items-center gap-3 mr-4 text-xs">
-                <div className="flex items-center gap-1">
-                    <span className="w-3 h-3 rounded-full bg-blue-100 border border-blue-200"></span>
-                    <span className="text-gray-500">Current Plan</span>
-                </div>
-                <div className="flex items-center gap-1">
-                    <span className="w-3 h-3 rounded-full bg-emerald-100 border border-emerald-200"></span>
-                    <span className="text-gray-500">AI Recommended</span>
-                </div>
-            </div>
+  const frequencyOptions = ["Daily", "Weekly", "Fortnightly", "Monthly", "Quarterly", "6 Monthly", "Yearly"];
+  const tradeOptions = ["Mechanical", "Electrical", "Hydraulic", "Automation", "Production"];
 
-            {onAutoAssignTrades && (
-                <button 
-                    onClick={onAutoAssignTrades} 
-                    disabled={loadingAI}
-                    className="flex items-center gap-1 bg-purple-100 hover:bg-purple-200 text-purple-700 px-3 py-1.5 rounded text-sm transition border border-purple-200 disabled:opacity-50 mr-2"
-                    title="Enrich Trade & Strategy (MTA)"
-                >
-                    {loadingAI ? <Loader2 size={16} className="animate-spin"/> : <Wand2 size={16} />} 
-                    <span className="hidden sm:inline">AI Auto-Enrich</span>
-                </button>
+  const AIButton = ({ icon: Icon, label, field, colorClass }: any) => {
+    const isEnriching = enrichingField === field;
+    return (
+        <button 
+            disabled={loadingAI}
+            onClick={() => onEnrich && onEnrich(field)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition shadow-sm border ${colorClass} disabled:opacity-50`}
+        >
+            {isEnriching ? <Loader2 size={12} className="animate-spin" /> : <Icon size={12} />}
+            {label}
+        </button>
+    );
+  };
+
+  return (
+    <div className="bg-white rounded-[2rem] shadow-xl border border-slate-200 flex flex-col h-full relative overflow-hidden ring-1 ring-slate-900/5">
+      <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
+        <div>
+            <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                <Layers className="text-emerald-500" size={18}/> Strategy Repository
+            </h3>
+            <p className="text-[10px] text-slate-400 font-bold uppercase mt-1 tracking-tighter">
+                {processedData.length === data.length 
+                    ? `Active: ${data.length} tasks scheduled` 
+                    : `Filtered: ${processedData.length} of ${data.length} tasks`}
+            </p>
+        </div>
+        <div className="flex gap-2">
+            {Object.keys(localFilters).some(k => localFilters[k] !== '') && (
+                <button onClick={() => { setLocalFilters({}); if (onGlobalFilterChange) { onGlobalFilterChange('asset', 'All'); onGlobalFilterChange('trade', 'All'); onGlobalFilterChange('frequency', 'All'); onGlobalFilterChange('strategy', 'All'); onGlobalFilterChange('state', 'All'); } }} className="flex gap-2 items-center bg-slate-100 text-slate-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-slate-200 hover:bg-slate-200 transition">Clear Filters</button>
             )}
-             {enableCopy && (
-                <button 
-                    onClick={handleCopyTable}
-                    className="flex items-center gap-1 bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded text-sm transition border border-gray-300 mr-2"
-                >
-                    {copied ? <Check size={16} className="text-green-600"/> : <Copy size={16} />}
-                    <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy Table'}</span>
-                </button>
-            )}
-            <button onClick={handleClear} className="text-gray-500 hover:text-red-600 px-3 py-1.5 text-sm transition">Clear</button>
-            <button onClick={handleAdd} className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-sm transition">
-                <Plus size={16} /> Add Task
-            </button>
+            <button onClick={handleAdd} className="flex gap-2 items-center bg-emerald-600 text-white px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition"><Plus size={16}/> New Task</button>
         </div>
       </div>
-      
-      <div className="overflow-auto flex-1 custom-scrollbar">
-        <table className="w-full text-sm text-left text-gray-500">
-          <thead className="text-xs text-gray-700 uppercase bg-gray-100 sticky top-0 z-10 shadow-sm">
-            <tr>
-              <ColumnHeader label="Asset / Location" columnKey="asset" width="min-w-[150px]" />
-              <ColumnHeader label="Task Description" columnKey="taskDescription" width="min-w-[300px]" />
-              <ColumnHeader label="Interval (M)" columnKey="frequency" width="min-w-[100px]" />
-              <ColumnHeader label="Trade" columnKey="trade" width="min-w-[120px]" />
-              <ColumnHeader label="Executors" columnKey="numberOfExecutors" width="min-w-[80px]" />
-              <ColumnHeader label="Type" columnKey="executorType" width="min-w-[100px]" />
-              <ColumnHeader label="Est. Hours" columnKey="estimatedDuration" width="min-w-[80px]" />
-              {/* New MTA Columns */}
-              <ColumnHeader label="Strategy" columnKey="taskType" width="min-w-[100px]" />
-              <ColumnHeader label="Criticality" columnKey="criticality" width="min-w-[100px]" />
 
-              <th className="px-4 py-3 align-top bg-gray-100 border-b border-gray-200 w-[100px]">
-                  <div className="font-semibold mb-2">Shutdown?</div>
-              </th>
-              <th className="px-4 py-3 bg-gray-100 border-b border-gray-200 text-right">Actions</th>
+      <div className="bg-slate-50/50 p-3 px-6 border-b border-slate-100 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+              <Sparkles size={16} className="text-indigo-500" />
+              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mr-2">AI Enrichment Tools</span>
+              <div className="flex gap-2">
+                  <AIButton field="trade" icon={Briefcase} label="Assign Trades" colorClass="bg-white hover:bg-indigo-50 text-indigo-700 border-indigo-100" />
+                  <AIButton field="frequency" icon={CalendarClock} label="Set Frequencies" colorClass="bg-white hover:bg-emerald-50 text-emerald-700 border-emerald-100" />
+                  <AIButton field="taskType" icon={Target} label="Define Strategies" colorClass="bg-white hover:bg-purple-50 text-purple-700 border-purple-100" />
+                  <AIButton field="shutdownRequired" icon={Activity} label="Determine State" colorClass="bg-white hover:bg-rose-50 text-rose-700 border-rose-100" />
+              </div>
+          </div>
+          <div className="text-[9px] font-bold text-slate-400 uppercase italic">Only populates missing data</div>
+      </div>
+
+      <div className="overflow-auto flex-1 custom-scrollbar">
+        <table className="w-full text-sm text-left border-collapse table-fixed">
+          <thead className="text-[10px] text-slate-700 uppercase bg-slate-50 sticky top-0 z-10 shadow-sm">
+            <tr>
+              <ColumnHeader label="Asset" col="asset" widthClass="w-[180px]" />
+              <ColumnHeader label="Description" col="taskDescription" widthClass="w-[450px]" />
+              <ColumnHeader label="Freq" col="frequency" widthClass="w-[140px]" />
+              <ColumnHeader label="Trade" col="trade" widthClass="w-[140px]" />
+              <ColumnHeader label="Dur (h)" col="estimatedDuration" widthClass="w-[100px]" icon={Hash} />
+              <ColumnHeader label="Exec" col="numberOfExecutors" widthClass="w-[100px]" icon={Users} />
+              <ColumnHeader label="Strat" col="taskType" widthClass="w-[180px]" />
+              <ColumnHeader label="State" col="shutdownRequired" widthClass="w-[130px]" />
+              <th className="px-4 py-4 bg-slate-50 border-b text-right font-black text-slate-400 uppercase tracking-widest w-[60px]">Del</th>
             </tr>
           </thead>
-          <tbody>
-            {processedData.length === 0 ? (
-                <tr><td colSpan={11} className="text-center py-12 text-gray-400">No tasks found (Try adjusting filters).</td></tr>
-            ) : (
-                processedData.map((row) => (
-                <tr 
-                    key={row.id} 
-                    className={`border-b transition align-top ${
-                        row.origin === 'New' ? 'bg-emerald-50 hover:bg-emerald-100' : 
-                        row.origin === 'Current' ? 'bg-blue-50 hover:bg-blue-100' : 
-                        'bg-white hover:bg-gray-50'
-                    }`}
-                >
-                    <td className="px-4 py-2">
-                        <input type="text" className={`bg-transparent w-full border-none focus:ring-0 p-0 ${!row.asset || row.asset === 'Unknown' ? 'text-red-500 font-bold' : ''}`}
-                            value={row.asset} onChange={(e) => handleChange(row.id, 'asset', e.target.value)} />
+          <tbody className="divide-y divide-slate-100">
+            {processedData.map(r => (
+                <tr key={r.id} className="hover:bg-slate-50/80 align-top transition-colors group">
+                    <td className="p-3 border-r border-slate-100 overflow-hidden"><input className="w-full bg-transparent text-[11px] font-black uppercase outline-none focus:bg-white px-1 rounded" value={r.asset} onChange={e=>handleChange(r.id,'asset',e.target.value)}/></td>
+                    <td className="p-3 border-r border-slate-100"><textarea rows={2} className="w-full bg-transparent text-[11px] font-medium text-slate-600 outline-none resize-y min-h-[3rem] focus:bg-white px-1 rounded" value={r.taskDescription} onChange={e=>handleChange(r.id,'taskDescription',e.target.value)}/></td>
+                    <td className="p-3 border-r border-slate-100 overflow-hidden">
+                        <input list={`freq-list-${r.id}`} className="w-full bg-transparent text-[11px] font-black outline-none focus:bg-white px-1 rounded border-none" value={r.frequency} placeholder="Interval..." onChange={e=>handleChange(r.id,'frequency',e.target.value)}/>
+                        <datalist id={`freq-list-${r.id}`}>{frequencyOptions.map(opt => <option key={opt} value={opt} />)}</datalist>
                     </td>
-                    <td className="px-4 py-2 relative group">
-                        <div className="flex items-start gap-2">
-                             <div className="mt-1">
-                                 {row.origin === 'New' && (
-                                    <span title="AI Recommendation">
-                                        <Sparkles size={14} className="text-emerald-500 shrink-0" />
-                                    </span>
-                                 )}
-                                 {row.origin === 'Current' && (
-                                    <span title="Existing Task">
-                                        <Briefcase size={14} className="text-blue-500 shrink-0" />
-                                    </span>
-                                 )}
-                             </div>
-                             <textarea 
-                                rows={3} 
-                                className="bg-transparent w-full border-none focus:ring-0 p-0 resize-y min-h-[3rem] whitespace-pre-wrap"
-                                value={row.taskDescription} 
-                                onChange={(e) => handleChange(row.id, 'taskDescription', e.target.value)} 
-                             />
+                    <td className="p-3 border-r border-slate-100">
+                        <div className="flex flex-col">
+                            <input 
+                                list={`trade-list-${r.id}`}
+                                className={`w-full bg-transparent text-[11px] font-black uppercase outline-none focus:bg-white px-1 rounded ${!r.trade ? 'text-slate-300 placeholder:text-slate-300' : 'text-indigo-600'}`} 
+                                value={r.trade} 
+                                placeholder="Trade..."
+                                onChange={e=>handleChange(r.id,'trade',e.target.value)}
+                            />
+                            <datalist id={`trade-list-${r.id}`}>
+                                {tradeOptions.map(opt => <option key={opt} value={opt} />)}
+                                {getUniqueValues('trade').filter(v => !tradeOptions.includes(v)).map(v => <option key={v} value={v} />)}
+                            </datalist>
                         </div>
                     </td>
-                    <td className="px-4 py-2">
-                        <input type="text" className="bg-transparent w-full border-none focus:ring-0 p-0 text-center"
-                            value={row.frequency} onChange={(e) => handleChange(row.id, 'frequency', e.target.value)} />
-                    </td>
-                    <td className="px-4 py-2">
-                         <select className={`bg-transparent w-full border-none focus:ring-0 p-0 ${!row.trade || row.trade === 'General' ? 'text-gray-400' : 'text-gray-900 font-medium'}`}
-                            value={row.trade} onChange={(e) => handleChange(row.id, 'trade', e.target.value)}>
-                            <option value="">Select...</option>
-                            <option value="Mechanical">Mechanical</option>
-                            <option value="Electrical">Electrical</option>
-                            <option value="Instrumentation">Instrumentation</option>
-                            <option value="Production">Production</option>
-                            <option value="Lubrication">Lubrication</option>
-                            <option value="General">General</option>
+                    <td className="p-3 border-r border-slate-100 overflow-hidden"><input type="number" step="0.5" className="w-full bg-transparent text-[11px] font-black text-right outline-none focus:bg-white px-1 rounded" value={r.estimatedDuration} onChange={e=>handleChange(r.id,'estimatedDuration',Number(e.target.value))}/></td>
+                    <td className="p-3 border-r border-slate-100 overflow-hidden"><input type="number" className="w-full bg-transparent text-[11px] font-black text-right outline-none focus:bg-white px-1 rounded" value={r.numberOfExecutors} onChange={e=>handleChange(r.id,'numberOfExecutors',Number(e.target.value))}/></td>
+                    <td className="p-3 border-r border-slate-100 overflow-hidden">
+                        <select className={`w-full bg-transparent text-[10px] font-black uppercase outline-none focus:bg-white px-1 rounded ${!r.taskType ? 'text-slate-300' : 'text-slate-800'}`} value={r.taskType} onChange={e=>handleChange(r.id,'taskType',e.target.value)}>
+                            <option value="">-- Unassigned --</option>
+                            <option value="Time Based">Time Based</option>
+                            <option value="Condition Based">Condition Based</option>
+                            <option value="Scheduled Restoration">Scheduled Restoration</option>
+                            <option value="Scheduled Replacement">Scheduled Replacement</option>
+                            <option value="Failure Finding">Failure Finding</option>
                         </select>
                     </td>
-                    <td className="px-4 py-2">
-                        <input type="number" min="1" className="bg-transparent w-full border-none focus:ring-0 p-0 text-center"
-                            value={row.numberOfExecutors} onChange={(e) => handleChange(row.id, 'numberOfExecutors', parseInt(e.target.value))} />
-                    </td>
-                    <td className="px-4 py-2">
-                         <select className={`bg-transparent w-full border-none focus:ring-0 p-0 ${row.executorType === 'Contractor' ? 'text-orange-600 font-medium' : row.executorType === 'Internal + Contractor' ? 'text-purple-600 font-medium' : 'text-emerald-700'}`}
-                            value={row.executorType} onChange={(e) => handleChange(row.id, 'executorType', e.target.value)}>
-                            <option value="Internal">Internal</option>
-                            <option value="Contractor">Contractor</option>
-                            <option value="Internal + Contractor">Internal + Contractor</option>
-                        </select>
-                    </td>
-                    <td className="px-4 py-2 font-mono text-emerald-700">
-                        <input type="number" className="bg-transparent w-full border-none focus:ring-0 p-0 text-center"
-                            value={row.estimatedDuration} onChange={(e) => handleChange(row.id, 'estimatedDuration', Number(e.target.value))} />
-                    </td>
-                    {/* Strategy Column */}
-                    <td className="px-4 py-2">
-                         <select className={`bg-transparent w-full border-none focus:ring-0 p-0 font-bold text-xs ${
-                             row.taskType === 'CBM' ? 'text-green-600' : 
-                             row.taskType === 'TBM' ? 'text-blue-600' : 
-                             row.taskType === 'FF' ? 'text-orange-600' : 'text-gray-400'
-                         }`}
-                            value={row.taskType || ''} onChange={(e) => handleChange(row.id, 'taskType', e.target.value)}>
-                            <option value="">Unknown</option>
-                            <option value="TBM">TBM (Time)</option>
-                            <option value="CBM">CBM (Cond)</option>
-                            <option value="FF">FF (Failure Finding)</option>
-                        </select>
-                    </td>
-                    {/* Criticality Column */}
-                    <td className="px-4 py-2">
-                         <select className={`bg-transparent w-full border-none focus:ring-0 p-0 font-bold text-xs ${
-                             row.criticality === 'High' ? 'text-red-600' : 
-                             row.criticality === 'Medium' ? 'text-yellow-600' : 'text-gray-400'
-                         }`}
-                            value={row.criticality || ''} onChange={(e) => handleChange(row.id, 'criticality', e.target.value)}>
-                            <option value="Low">Low</option>
-                            <option value="Medium">Medium</option>
-                            <option value="High">High</option>
-                        </select>
-                    </td>
-
-                    <td className="px-4 py-2 text-center">
-                        <input type="checkbox" className="rounded text-emerald-600 focus:ring-emerald-500"
-                            checked={row.shutdownRequired} onChange={(e) => handleChange(row.id, 'shutdownRequired', e.target.checked)} />
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                        <button onClick={() => handleDelete(row.id)} className="text-gray-400 hover:text-red-500 p-1"><Trash2 size={16} /></button>
-                    </td>
+                    <td className="p-3 border-r border-slate-100 text-center overflow-hidden"><button onClick={() => handleChange(r.id, 'shutdownRequired', !r.shutdownRequired)} className={`px-2 py-1 rounded text-[9px] font-black border transition-all ${r.shutdownRequired ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-emerald-50 text-emerald-600 border-emerald-200'}`}>{r.shutdownRequired ? 'SHUTDOWN' : 'RUNNING'}</button></td>
+                    <td className="p-3 text-right overflow-hidden"><button onClick={()=>handleDelete(r.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={16}/></button></td>
                 </tr>
-                ))
-            )}
+            ))}
           </tbody>
         </table>
       </div>

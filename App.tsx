@@ -1,552 +1,403 @@
-
-import React, { useState, useMemo, useEffect } from 'react';
-import { RawRecord, MaintenanceCost, InputMode, PMRecord, SavedDataset } from './types';
+import React, { useState, useEffect } from 'react';
+import { readExcelRaw, processMappedData } from './utils/reliabilityMath';
+import { predictSpecificAttribute } from './services/geminiService';
 import DataGrid from './components/DataGrid';
 import PMDataGrid from './components/PMDataGrid';
 import Dashboard from './components/Dashboard';
 import PMDashboard from './components/PMDashboard';
-import OptimizationPanel from './components/OptimizationPanel';
 import PMAuditPanel from './components/PMAuditPanel';
 import TrendAnalysis from './components/TrendAnalysis';
+import OptimizationPanel from './components/OptimizationPanel';
+import RootCauseHunter from './components/RootCauseHunter';
 import AIWizard from './components/AIWizard';
-import RCMGenerator from './components/RCMGenerator';
-import { parseExcelFile, parsePMExcel, calculateMetrics, calculateTimeBetweenFailures, calculateWeibull } from './utils/reliabilityMath';
-import { classifyFailureModes, predictTaskMetadata } from './services/geminiService';
-import { UploadCloud, BarChart2, Table, Settings, Cpu, Loader2, FileSpreadsheet, Presentation, Upload, PlusSquare, DollarSign, TrendingUp, Save, FolderOpen, Trash2, Sparkles, Hammer, BookOpen, AppWindow } from 'lucide-react';
+import ImportWizard from './components/ImportWizard';
+import { 
+  UploadCloud, BarChart2, Table, Cpu, FileSpreadsheet, Target, 
+  TrendingUp, Calculator, ShieldCheck, Zap, Users, FileUp, 
+  Database, HelpCircle, X, Info, ZapOff, Play, BookOpen, Globe
+} from 'lucide-react';
+import { RawRecord, PMRecord, MaintenanceCost, ImportMode, FieldMapping, AppLanguage } from './types';
+import { useAppStore } from './store';
+import { dbApi } from './utils/db';
 
 const App: React.FC = () => {
-  // Navigation State
   const [activeTab, setActiveTab] = useState<string>('b1_data');
+  const [isGlossaryOpen, setIsGlossaryOpen] = useState(false);
 
-  // --- BOX 1 STATE: Delay Record Reliability Analysis ---
-  const [box1Data, setBox1Data] = useState<RawRecord[]>([]);
-  const [box1Filters, setBox1Filters] = useState({ asset: 'All', failureMode: 'All' });
-  const [savedDatasets, setSavedDatasets] = useState<SavedDataset[]>([]);
-  const [box1Costs, setBox1Costs] = useState<MaintenanceCost>({ 
-      preventive: { material: 50, labor: 25, productionLoss: 100 }, 
-      corrective: { material: 200, labor: 40, productionLoss: 100 } 
-  });
-  const [box1PmDuration, setBox1PmDuration] = useState<number>(2);
-  const [box1AiAdvice, setBox1AiAdvice] = useState<string>('');
-  const [box1OptimalPM, setBox1OptimalPM] = useState<number | null>(null);
+  // --- STORE STATE ---
+  const { 
+    box1Data, setBox1Data, 
+    box1Filters, setBox1Filter, 
+    box1Costs, updateCost, 
+    box1PmDuration, setBox1PmDuration,
+    pmPlanData, setPmPlanData,
+    box2Filters, setBox2Filter,
+    loadingAI, setLoadingAI,
+    language, setLanguage
+  } = useAppStore();
+
+  // --- PERSISTENCE LOGIC ---
   
-  // --- BOX 2 STATE: PM Plan Review (Upload & Analyze) ---
-  const [pmPlanData, setPmPlanData] = useState<PMRecord[]>([]);
-  const [box2Filters, setBox2Filters] = useState({ asset: 'All', trade: 'All', frequency: 'All', executorType: 'All', criticality: 'All' });
-
-  const [loadingAI, setLoadingAI] = useState(false);
-
-  // --- Initialize Saved Datasets ---
+  // 1. Hydrate state from DB on mount
   useEffect(() => {
-      const stored = localStorage.getItem('reliability_datasets');
-      if (stored) {
-          try {
-              setSavedDatasets(JSON.parse(stored));
-          } catch (e) {
-              console.error("Failed to parse saved datasets", e);
-          }
-      }
+    const hydrate = async () => {
+        try {
+            const saved = await dbApi.getSession();
+            if (saved) {
+                if (saved.box1Data) setBox1Data(saved.box1Data);
+                if (saved.pmPlanData) setPmPlanData(saved.pmPlanData);
+                if (saved.box1PmDuration) setBox1PmDuration(saved.box1PmDuration);
+                if (saved.language) setLanguage(saved.language);
+                
+                // Hydrate Costs
+                if (saved.box1Costs) {
+                    const types: ('preventive' | 'corrective')[] = ['preventive', 'corrective'];
+                    types.forEach(t => {
+                        Object.entries(saved.box1Costs[t]).forEach(([field, value]) => {
+                            updateCost(t, field as any, value as number);
+                        });
+                    });
+                }
+
+                // Hydrate Filters
+                if (saved.box1Filters) {
+                    Object.entries(saved.box1Filters).forEach(([k, v]) => setBox1Filter(k, v as string));
+                }
+                if (saved.box2Filters) {
+                    Object.entries(saved.box2Filters).forEach(([k, v]) => setBox2Filter(k, v as string));
+                }
+                
+                if (saved.activeTab && saved.activeTab !== 'edu_hub') setActiveTab(saved.activeTab);
+            }
+        } catch (e) {
+            console.error("Hydration failed", e);
+        }
+    };
+    hydrate();
   }, []);
 
-  // --- Handlers ---
+  // 2. Auto-save state on changes (debounced)
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+        dbApi.saveSession({
+            box1Data,
+            pmPlanData,
+            box1Costs,
+            box1PmDuration,
+            box1Filters,
+            box2Filters,
+            language,
+            activeTab,
+            timestamp: Date.now()
+        });
+    }, 1000);
+    return () => clearTimeout(timeout);
+  }, [box1Data, pmPlanData, box1Costs, box1PmDuration, box1Filters, box2Filters, language, activeTab]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, targetBox: 'box1' | 'box2') => {
-    if (e.target.files && e.target.files[0]) {
+
+  // --- LOCAL UI STATE ---
+  const [enrichingField, setEnrichingField] = useState<string | null>(null);
+  const [importState, setImportState] = useState<{ open: boolean, mode: ImportMode, headers: string[], rows: any[], name: string } | null>(null);
+
+  const handleImportFile = async (file: File, targetBox: ImportMode) => {
       try {
-        if (targetBox === 'box1') {
-            const records = await parseExcelFile(e.target.files[0]);
-            setBox1Data(records);
-            setActiveTab('b1_data');
-        } else if (targetBox === 'box2') {
-            const tasks = await parsePMExcel(e.target.files[0]);
-            setPmPlanData(tasks);
-            setActiveTab('b2_upload');
-        }
-      } catch (err) {
-        alert("Error parsing Excel file. Ensure standard column headers.");
-      }
-    }
+        const { headers, rows } = await readExcelRaw(file);
+        const name = file.name.replace(/\.[^/.]+$/, "");
+        setImportState({ open: true, mode: targetBox, headers, rows, name });
+      } catch (err) { alert("Error parsing Excel file."); }
   };
 
-  const handleSaveDataset = () => {
-      if (box1Data.length === 0) {
-          alert("No records to save. Please upload a file or add data first.");
+  const handleImportConfirm = async (mapping: FieldMapping[], dateFormat: 'auto' | 'dd/mm' | 'mm/dd') => {
+      if (!importState) return;
+      try {
+          const processed = processMappedData(importState.rows, mapping, importState.mode, dateFormat);
+          
+          if (importState.mode === 'box1') {
+              setBox1Data(processed as RawRecord[]);
+              setActiveTab('b1_data');
+          } else {
+              setPmPlanData(processed as PMRecord[]);
+              setActiveTab('b2_upload');
+          }
+      } catch (e) { alert("Error processing mapping."); } finally { setImportState(null); }
+  };
+
+  const handleEnrichAttribute = async (attribute: 'trade' | 'frequency' | 'taskType' | 'shutdownRequired') => {
+      const targets = pmPlanData.filter(t => {
+          if (attribute === 'shutdownRequired') return true; // AI state review for all
+          return !t[attribute] || t[attribute] === '';
+      });
+
+      if (targets.length === 0 && attribute !== 'shutdownRequired') {
+          alert(`All tasks already have a assigned ${attribute}.`);
           return;
       }
-      
-      const defaultName = `Dataset ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-      const name = prompt("Enter a name for this dataset:", defaultName);
-      
-      if (!name) return; // User cancelled
-      
-      try {
-        const newDataset: SavedDataset = {
-            id: Date.now().toString(),
-            name,
-            date: new Date().toISOString(),
-            records: box1Data
-        };
-        
-        const updated = [...savedDatasets, newDataset];
-        
-        // Attempt to save to localStorage first to catch quota errors
-        localStorage.setItem('reliability_datasets', JSON.stringify(updated));
-        
-        // Only update state if localStorage write succeeded
-        setSavedDatasets(updated);
-        alert(`Dataset "${name}" saved successfully!`);
-      } catch (e) {
-          console.error("Storage Error:", e);
-          alert("Failed to save dataset. Your browser's Local Storage might be full (Quota Exceeded). Try deleting old datasets to free up space.");
-      }
-  };
 
-  const handleLoadDataset = (id: string) => {
-      if (!id) return;
-      const ds = savedDatasets.find(d => d.id === id);
-      if (ds) {
-          if (box1Data.length > 0 && !confirm(`Overwrite current data with "${ds.name}"? Unsaved changes will be lost.`)) return;
-          setBox1Data(ds.records);
-          alert(`Loaded: ${ds.name}`);
-      }
-  };
-
-  const handleDeleteDataset = (id: string) => {
-      const ds = savedDatasets.find(d => d.id === id);
-      if (!ds) return;
-      if (confirm(`Are you sure you want to delete "${ds.name}"? This cannot be undone.`)) {
-          try {
-            const updated = savedDatasets.filter(d => d.id !== id);
-            localStorage.setItem('reliability_datasets', JSON.stringify(updated));
-            setSavedDatasets(updated);
-          } catch (e) {
-            console.error("Delete failed", e);
-            alert("Failed to update storage.");
-          }
-      }
-  };
-
-  const runAIClassificationBox1 = async () => {
-    if (box1Data.length === 0) return;
-    setLoadingAI(true);
-    try {
-      const modeMap = await classifyFailureModes(box1Data);
-      const updatedData = box1Data.map(r => {
-        const cleanDesc = r.description?.trim();
-        const standardizedMode = modeMap.get(cleanDesc);
-        return {
-          ...r,
-          failureMode: standardizedMode || r.failureMode || 'Uncategorized'
-        };
-      });
-      setBox1Data(updatedData);
-      alert(`Success! Standardized ${updatedData.length} records into ${new Set(updatedData.map(r => r.failureMode)).size} categories.`);
-    } catch (e: any) {
-      console.error(e);
-      alert(`AI Classification failed: ${e.message || "Unknown error"}. Please check API Key and try again.`);
-    } finally {
-      setLoadingAI(false);
-    }
-  };
-
-  const handleAutoAssignTrades = async () => {
-      if (pmPlanData.length === 0) return;
       setLoadingAI(true);
+      setEnrichingField(attribute);
       try {
-          const predictedData = await predictTaskMetadata(pmPlanData);
+          const predictions = await predictSpecificAttribute(targets, attribute, language);
           const updated = pmPlanData.map(task => {
-              const meta = predictedData[task.id];
-              if (meta) {
-                  return { 
-                      ...task, 
-                      trade: meta.trade || task.trade,
-                      taskType: (meta.taskType as any) || task.taskType
-                  };
-              }
-              return task;
+              const val = predictions[task.id];
+              if (val === undefined) return task;
+              return { ...task, [attribute]: val };
           });
           setPmPlanData(updated);
-          alert("Success! Trades and Strategy types assigned.");
-      } catch (e) {
-          alert("Failed to auto-assign metadata.");
-      } finally {
-          setLoadingAI(false);
-      }
-  };
-
-  const updateCost = (type: 'preventive' | 'corrective', field: keyof MaintenanceCost['preventive'], value: number) => {
-      setBox1Costs(prev => ({ ...prev, [type]: { ...prev[type], [field]: value } }));
+      } catch (e) { alert("AI Enrichment Failed."); } finally { setLoadingAI(false); setEnrichingField(null); }
   };
 
   const handleExportExcel = () => {
     const wb = (window as any).XLSX.utils.book_new();
-    
     if (activeTab.startsWith('b1') && box1Data.length > 0) {
-        const metrics = calculateMetrics(box1Data, 'timestamp');
-        const tbf = calculateTimeBetweenFailures(box1Data, 'timestamp');
-        const weibull = calculateWeibull(tbf);
-        const ws1 = (window as any).XLSX.utils.json_to_sheet([{ Metric: "MTBF", Value: metrics.mtbf.toFixed(2) }, { Metric: "Beta", Value: weibull.beta.toFixed(3) }]);
-        (window as any).XLSX.utils.book_append_sheet(wb, ws1, "Stats");
-        (window as any).XLSX.writeFile(wb, `Reliability_Report.xlsx`);
+        const ws = (window as any).XLSX.utils.json_to_sheet(box1Data);
+        (window as any).XLSX.utils.book_append_sheet(wb, ws, "Raw Data");
+        (window as any).XLSX.writeFile(wb, `Reliability_Data.xlsx`);
     } else if (activeTab.startsWith('b2') && pmPlanData.length > 0) {
         const ws = (window as any).XLSX.utils.json_to_sheet(pmPlanData);
-        (window as any).XLSX.utils.book_append_sheet(wb, ws, "PM_Plan_Review");
-        (window as any).XLSX.writeFile(wb, `PM_Plan_Review.xlsx`);
-    } else {
-        alert("No data available to export for the active view.");
-    }
-  };
-
-  const handleExportPPT = () => {
-      // 1. Setup PPT
-      const pptx = new (window as any).PptxGenJS();
-      pptx.layout = 'LAYOUT_16x9';
-
-      // Title Slide
-      let slide = pptx.addSlide();
-      slide.addText("Reliability & Maintenance Strategy Report", { x: 1, y: 1, fontSize: 24, bold: true, color: '363636' });
-      slide.addText(`Generated: ${new Date().toLocaleDateString()}`, { x: 1, y: 1.5, fontSize: 14, color: '808080' });
-      
-      let context = 'Analysis';
-      if(activeTab.startsWith('b1')) context = 'Delay Reliability';
-      if(activeTab.startsWith('b2')) context = 'PM Review';
-
-      slide.addText(`Context: ${context}`, { x: 1, y: 2, fontSize: 18, color: '4f46e5' });
-
-      // If Box 1 Active -> Stats Charts
-      if (activeTab.startsWith('b1') && box1Data.length > 0) {
-          const metrics = calculateMetrics(box1Data, 'timestamp');
-          const tbf = calculateTimeBetweenFailures(box1Data, 'timestamp');
-          const weibull = calculateWeibull(tbf);
-          
-          let slide2 = pptx.addSlide();
-          slide2.addText("Key Performance Indicators", { x: 0.5, y: 0.5, fontSize: 18, bold: true, color: '363636' });
-          const kpiOpts = { x: 0.5, w: 2.5, h: 1.5, fill: 'f3f4f6', align: 'center', valign: 'middle' };
-          slide2.addText(`MTBF: ${metrics.mtbf.toFixed(1)} hrs`, { ...kpiOpts, y: 1.5 });
-          slide2.addText(`MTTR: ${metrics.mttr.toFixed(1)} hrs`, { ...kpiOpts, x: 3.5, y: 1.5 });
-          slide2.addText(`Availability: ${metrics.availability.toFixed(1)}%`, { ...kpiOpts, x: 6.5, y: 1.5 });
-          slide2.addText(`Beta (Shape): ${weibull.beta.toFixed(2)}`, { ...kpiOpts, x: 9.5, y: 1.5 });
-
-          let slide3 = pptx.addSlide();
-          slide3.addText("Top Failure Modes (Downtime)", { x: 0.5, y: 0.5, fontSize: 18, bold: true });
-          const chartData = [];
-          const modeMap = new Map();
-          box1Data.forEach(r => {
-              const m = r.failureMode || 'Uncategorized';
-              modeMap.set(m, (modeMap.get(m) || 0) + r.durationMinutes);
-          });
-          Array.from(modeMap.entries()).sort((a,b) => b[1] - a[1]).slice(0, 10).forEach(([name, val]) => chartData.push({ name, value: val }));
-          slide3.addChart(pptx.ChartType.bar, [{ name: "Downtime (Min)", labels: chartData.map(d => d.name), values: chartData.map(d => d.value) }], { x: 0.5, y: 1, w: 9, h: 4.5, showLegend: false, barDir: 'col', chartColors: ['4f46e5'] });
-      } 
-      else if (activeTab.startsWith('b2') && pmPlanData.length > 0) {
-           let slide2 = pptx.addSlide();
-           slide2.addText("Maintenance Plan Summary", { x: 0.5, y: 0.5, fontSize: 18, bold: true });
-           slide2.addText(`Total Tasks: ${pmPlanData.length}`, { x: 1, y: 1.5, fontSize: 14 });
-           const internal = pmPlanData.filter(t => t.executorType !== 'Contractor').length;
-           const external = pmPlanData.length - internal;
-           slide2.addChart(pptx.ChartType.pie, [{ name: "Executor Split", labels: ['Internal', 'Contractor'], values: [internal, external] }], { x: 1, y: 2, w: 5, h: 3 });
-      }
-
-      pptx.writeFile({ fileName: 'Reliability_Presentation.pptx' });
+        (window as any).XLSX.utils.book_append_sheet(wb, ws, "PM_Plan");
+        (window as any).XLSX.writeFile(wb, `PM_Plan.xlsx`);
+    } else { alert("No data available to export."); }
   };
 
   const getHeaderTitle = () => {
     switch(activeTab) {
-        case 'b1_data': return 'Delay Record Management (Box 1)';
-        case 'b1_stats': return 'Reliability Statistics (Box 1)';
-        case 'b1_trends': return 'Reliability Growth & Trends (Box 1)';
-        
-        case 'b2_upload': return 'PM Plan Management (Box 2)';
-        case 'b2_stats': return 'Workload & Strategy Analytics (Box 2)';
-        case 'b2_opt': return 'AI Audit & Gap Analysis (Box 2)';
-        case 'b2_cost_opt': return 'Maintenance Strategy Optimization By Cost (Box 2)';
-
-        case 'b3_rcm': return 'RCM Generator (Box 3)';
-        
-        default: return 'Dashboard';
+        case 'b1_data': return 'Delay Intelligence';
+        case 'b1_stats': return 'Reliability Analytics';
+        case 'b1_rch': return 'Root Cause Analysis';
+        case 'b1_trends': return 'Trend Evolution';
+        case 'b2_upload': return 'Plan Repository';
+        case 'b2_stats': return 'Strategy Insights';
+        case 'b2_opt': return 'AI Compliance & Gaps';
+        case 'b2_cost': return 'Financial Optimizer';
+        default: return 'Control Center';
     }
   };
 
-  const dataSummary = useMemo(() => {
-    if (activeTab.startsWith('b1')) {
-        const m = calculateMetrics(box1Data, 'timestamp');
-        return `Records: ${box1Data.length}. MTBF: ${m.mtbf.toFixed(1)}h. MTTR: ${m.mttr.toFixed(1)}h.`;
-    } else if (activeTab.startsWith('b2')) {
-        return `Tasks: ${pmPlanData.length}.`;
-    } else {
-        return `Reliability App.`;
-    }
-  }, [box1Data, pmPlanData, activeTab]);
+  const NavButton = ({ tab, icon: Icon, label, colorClass }: any) => {
+    const isActive = activeTab === tab;
+    return (
+        <button 
+            onClick={() => setActiveTab(tab)} 
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-xs font-black uppercase tracking-widest relative group ${
+                isActive 
+                ? `${colorClass} text-white shadow-lg ring-1 ring-white/20` 
+                : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
+            }`}
+        >
+            <Icon size={18} className={isActive ? 'text-white' : 'text-slate-600 group-hover:text-slate-400'} />
+            {label}
+            {isActive && <div className="absolute left-[-1rem] top-1/2 -translate-y-1/2 w-1.5 h-6 bg-white rounded-r-full shadow-[0_0_15px_rgba(255,255,255,0.5)]"></div>}
+        </button>
+    );
+  };
+
+  const languages: AppLanguage[] = ['English', 'French', 'Spanish', 'German', 'Polish'];
 
   return (
-    <div className="flex h-screen bg-slate-50 text-slate-900">
-      {/* Sidebar */}
-      <aside className="w-72 bg-slate-900 text-slate-300 flex flex-col flex-shrink-0">
-        <div className="p-6 border-b border-slate-800">
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-            <Cpu className="text-indigo-400" /> ReliabilityAI
-          </h1>
-          <p className="text-xs mt-2 text-slate-500">Asset Intelligence Platform</p>
+    <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden">
+      <aside className="w-72 bg-slate-950 text-slate-300 flex flex-col flex-shrink-0 shadow-2xl z-50">
+        <div className="p-8 border-b border-slate-900">
+          <div className="flex items-center gap-3">
+             <div className="p-2.5 bg-indigo-600 rounded-2xl shadow-lg shadow-indigo-600/20 ring-1 ring-white/20">
+                <ShieldCheck size={24} className="text-white fill-white" />
+             </div>
+             <h1 className="text-xl font-black text-white tracking-tighter">ReliabilityToolkit</h1>
+          </div>
         </div>
         
-        <nav className="flex-1 p-4 space-y-6 overflow-y-auto custom-scrollbar">
-          
-          {/* BOX 1 */}
-          <div className="border border-indigo-900/50 rounded-lg overflow-hidden">
-             <div className="bg-slate-800 px-4 py-2 border-b border-indigo-900/50">
-                 <h3 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Delay record reliability analysis</h3>
-             </div>
-             <div className="p-2 space-y-1 bg-slate-800/30">
-                <button onClick={() => setActiveTab('b1_data')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-md transition text-sm font-medium ${activeTab === 'b1_data' ? 'bg-indigo-600 text-white' : 'hover:bg-slate-800'}`}>
-                    <Table size={18} /> Delay record management
-                </button>
-                <button onClick={() => setActiveTab('b1_stats')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-md transition text-sm font-medium ${activeTab === 'b1_stats' ? 'bg-indigo-600 text-white' : 'hover:bg-slate-800'}`}>
-                    <BarChart2 size={18} /> Reliability statistics
-                </button>
-                <button onClick={() => setActiveTab('b1_trends')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-md transition text-sm font-medium ${activeTab === 'b1_trends' ? 'bg-indigo-600 text-white' : 'hover:bg-slate-800'}`}>
-                    <TrendingUp size={18} /> Trend Analysis
-                </button>
-             </div>
+        <nav className="flex-1 p-5 space-y-8 overflow-y-auto custom-scrollbar">
+          <div className="space-y-2">
+             <h3 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.25em] mb-4 ml-2">Analytics</h3>
+             <NavButton tab="b1_data" icon={Table} label="Data Grid" colorClass="bg-indigo-600" />
+             <NavButton tab="b1_stats" icon={BarChart2} label="Reliability" colorClass="bg-indigo-600" />
+             <NavButton tab="b1_rch" icon={Target} label="Root Cause" colorClass="bg-indigo-600" />
+             <NavButton tab="b1_trends" icon={TrendingUp} label="Trends" colorClass="bg-indigo-600" />
           </div>
-
-          {/* BOX 2 */}
-          <div className="border border-emerald-900/50 rounded-lg overflow-hidden">
-             <div className="bg-slate-800 px-4 py-2 border-b border-emerald-900/50">
-                 <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Preventive maintenance plan review</h3>
-             </div>
-             <div className="p-2 space-y-1 bg-slate-800/30">
-                <button onClick={() => setActiveTab('b2_upload')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-md transition text-sm font-medium ${activeTab === 'b2_upload' ? 'bg-emerald-600 text-white' : 'hover:bg-slate-800'}`}>
-                    <UploadCloud size={18} /> PM plan upload
-                </button>
-                <button onClick={() => setActiveTab('b2_stats')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-md transition text-sm font-medium ${activeTab === 'b2_stats' ? 'bg-emerald-600 text-white' : 'hover:bg-slate-800'}`}>
-                    <BarChart2 size={18} /> Workload Analytics
-                </button>
-                <button onClick={() => setActiveTab('b2_opt')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-md transition text-sm font-medium ${activeTab === 'b2_opt' ? 'bg-emerald-600 text-white' : 'hover:bg-slate-800'}`}>
-                    <Cpu size={18} /> AI Audit & Gap Analysis
-                </button>
-                <button onClick={() => setActiveTab('b2_cost_opt')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-md transition text-sm font-medium ${activeTab === 'b2_cost_opt' ? 'bg-emerald-600 text-white' : 'hover:bg-slate-800'}`}>
-                    <DollarSign size={18} /> Maintenance strategy optimization by cost
-                </button>
-             </div>
+          <div className="space-y-2">
+             <h3 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.25em] mb-4 ml-2">Planning</h3>
+             <NavButton tab="b2_upload" icon={UploadCloud} label="PM Repository" colorClass="bg-emerald-600" />
+             <NavButton tab="b2_stats" icon={ShieldCheck} label="Strategy" colorClass="bg-emerald-600" />
+             <NavButton tab="b2_opt" icon={Cpu} label="AI Compliance" colorClass="bg-emerald-600" />
+             <NavButton tab="b2_cost" icon={Calculator} label="Cost Strategy" colorClass="bg-emerald-600" />
           </div>
-
-          {/* BOX 3 */}
-          <div className="border border-purple-900/50 rounded-lg overflow-hidden">
-             <div className="bg-slate-800 px-4 py-2 border-b border-purple-900/50">
-                 <h3 className="text-xs font-bold text-purple-400 uppercase tracking-wider">Preventive Maintenance Plan Builder</h3>
-             </div>
-             <div className="p-2 space-y-1 bg-slate-800/30">
-                 <button onClick={() => setActiveTab('b3_rcm')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-md transition text-sm font-medium ${activeTab === 'b3_rcm' ? 'bg-purple-600 text-white' : 'hover:bg-slate-800'}`}>
-                    <Hammer size={18} /> RCM Generator
-                </button>
-             </div>
-          </div>
-
         </nav>
 
-        <div className="p-4 border-t border-slate-800 flex flex-col gap-3">
-             <div className="grid grid-cols-2 gap-2">
-                 <button onClick={handleExportExcel} className="bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-2 rounded-md text-xs font-medium flex justify-center gap-1 shadow-lg">
-                    <FileSpreadsheet size={16} /> Excel
-                 </button>
-                 <button onClick={handleExportPPT} className="bg-orange-600 hover:bg-orange-700 text-white py-2 px-2 rounded-md text-xs font-medium flex justify-center gap-1 shadow-lg">
-                    <Presentation size={16} /> PPT
-                 </button>
+        <div className="p-6 border-t border-slate-900 bg-slate-950/50 flex flex-col gap-3">
+             <div className="mb-2">
+                 <h3 className="text-[9px] font-black text-slate-600 uppercase tracking-widest mb-3 ml-1 flex items-center gap-2">
+                     <Globe size={12} /> AI Response Language
+                 </h3>
+                 <div className="grid grid-cols-1 gap-1">
+                     <select 
+                        value={language} 
+                        onChange={(e) => setLanguage(e.target.value as AppLanguage)}
+                        className="bg-slate-900 border border-slate-800 text-slate-300 text-[10px] font-black uppercase py-2.5 px-3 rounded-xl outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer"
+                     >
+                        {languages.map(lang => <option key={lang} value={lang}>{lang}</option>)}
+                     </select>
+                 </div>
              </div>
-             <div className="bg-slate-800 rounded p-3 text-xs text-center">
-                API Key: <span className={process.env.API_KEY ? "text-green-400 font-bold" : "text-red-400 font-bold"}>{process.env.API_KEY ? "CONNECTED" : "MISSING"}</span>
-             </div>
+             <button onClick={handleExportExcel} className="w-full bg-slate-900 hover:bg-slate-800 text-slate-300 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 border border-slate-800 transition-all shadow-lg">
+                <FileSpreadsheet size={16} className="text-emerald-500" /> Export Bundle
+             </button>
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-8">
-            <h2 className="text-xl font-semibold text-gray-800 capitalize">{getHeaderTitle()}</h2>
+      <main className="flex-1 flex flex-col h-screen overflow-hidden relative bg-slate-50">
+        <header className="h-20 bg-white/80 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-10 shrink-0">
+            <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase tracking-widest">{getHeaderTitle()}</h2>
             <div className="flex items-center gap-4">
-                {activeTab.startsWith('b1') && (
-                    <label className="flex items-center gap-2 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded cursor-pointer transition text-sm font-medium border border-indigo-200">
-                        <Upload size={18} /> <span>Upload Delay Records</span>
-                        <input type="file" accept=".xlsx, .xls" className="hidden" onChange={(e) => handleFileUpload(e, 'box1')} />
-                    </label>
-                )}
-                {activeTab.startsWith('b2') && (
-                    <label className="flex items-center gap-2 px-4 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded cursor-pointer transition text-sm font-medium border border-emerald-200">
-                        <Upload size={18} /> <span>Upload PM Plan</span>
-                        <input type="file" accept=".xlsx, .xls" className="hidden" onChange={(e) => handleFileUpload(e, 'box2')} />
-                    </label>
-                )}
+                <div className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-2xl border border-slate-200">
+                    <Users className="text-slate-400" size={16} />
+                    <span className="text-xs font-black text-slate-600 uppercase tracking-tighter">Pro Level</span>
+                </div>
             </div>
         </header>
 
-        <div className="flex-1 overflow-auto p-8 custom-scrollbar">
-            
-            {/* --- BOX 1 CONTENT --- */}
+        <div className="flex-1 overflow-auto p-8 custom-scrollbar relative">
             {activeTab === 'b1_data' && (
-                <div className="flex flex-col h-full gap-4">
-                     <div className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm flex items-center gap-4">
-                        <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2">
-                            <FolderOpen size={18} className="text-indigo-600"/> Dataset Manager
-                        </h4>
-                        <div className="h-6 w-px bg-gray-300 mx-2"></div>
-                        <select 
-                            className="bg-gray-50 border border-gray-300 text-gray-900 text-xs rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2 w-64"
-                            onChange={(e) => handleLoadDataset(e.target.value)}
-                            value=""
-                        >
-                            <option value="">-- Load Saved Dataset --</option>
-                            {savedDatasets.map(d => (
-                                <option key={d.id} value={d.id}>{d.name} ({new Date(d.date).toLocaleDateString()})</option>
-                            ))}
-                        </select>
-                         <button onClick={handleSaveDataset} className="flex items-center gap-1 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-3 py-1.5 rounded text-xs font-medium transition">
-                            <Save size={14} /> Save Current
-                        </button>
-                         {savedDatasets.length > 0 && (
-                             <button onClick={() => {
-                                 const idToDelete = prompt("Enter the Exact Name of the dataset to delete:\n" + savedDatasets.map(d => d.name).join('\n'));
-                                 const ds = savedDatasets.find(d => d.name === idToDelete);
-                                 if(ds) handleDeleteDataset(ds.id);
-                             }} className="text-gray-400 hover:text-red-500 ml-auto" title="Delete a Dataset">
-                                <Trash2 size={16} />
-                            </button>
-                         )}
-                     </div>
-
-                    <div className="flex-1 min-h-0">
-                        <DataGrid 
-                            data={box1Data} 
-                            onUpdate={setBox1Data} 
-                            title="Delay Records"
-                            externalAssetFilter={box1Filters.asset}
-                            externalModeFilter={box1Filters.failureMode}
-                            onGlobalFilterChange={(key, val) => setBox1Filters(prev => ({ ...prev, [key]: val }))}
-                        />
-                    </div>
-                    <div className="bg-white p-4 rounded-lg border border-gray-200 shadow-sm flex justify-between items-center">
-                        <div>
-                            <p className="text-sm font-semibold text-gray-800">AI Assistance</p>
-                            <p className="text-xs text-gray-500">Use AI to standardize failure modes from raw descriptions.</p>
+                <div className="flex flex-col h-full gap-6">
+                    <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between ring-1 ring-slate-900/5">
+                        <div className="flex items-center gap-3 px-3">
+                            <FileUp size={18} className="text-indigo-500"/>
+                            <div>
+                                <p className="text-[9px] text-slate-400 font-black uppercase tracking-tighter">Delay Source</p>
+                                <p className="text-[11px] font-black text-slate-700">
+                                    {box1Data.length > 0 ? `Active: ${box1Data.length} records` : 'Ready for import'}
+                                </p>
+                            </div>
                         </div>
-                        <button 
-                            onClick={runAIClassificationBox1}
-                            disabled={loadingAI || box1Data.length === 0}
-                            className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded flex items-center gap-2 disabled:opacity-50 transition text-sm font-medium"
-                        >
-                            {loadingAI ? <Loader2 className="animate-spin" /> : <Sparkles size={16} />} 
-                            Check All Failure Modes with AI
-                        </button>
+                        <label className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition shadow-lg cursor-pointer">
+                            <UploadCloud size={16} /> Import Delay Logs
+                            <input type="file" accept=".xlsx, .xls" className="hidden" onChange={(e) => e.target.files?.[0] && handleImportFile(e.target.files[0], 'box1')} />
+                        </label>
+                    </div>
+                    <div className="flex-1 min-h-0">
+                        <DataGrid data={box1Data} setData={setBox1Data} loadingAI={loadingAI} setLoadingAI={setLoadingAI} filters={box1Filters} onGlobalFilterChange={(k, v) => setBox1Filter(k, v)} />
                     </div>
                 </div>
             )}
+            {activeTab === 'b1_stats' && <Dashboard box1Data={box1Data} box1Filters={box1Filters} setBox1Filter={(k,v) => setBox1Filter(k, v)} inputMode="timestamp" />}
+            {activeTab === 'b1_rch' && <RootCauseHunter box1Data={box1Data} box1Filters={box1Filters} setBox1Filter={(k,v) => setBox1Filter(k, v)} />}
+            {activeTab === 'b1_trends' && <TrendAnalysis box1Data={box1Data} selectedAsset={box1Filters.asset} onAssetChange={(val) => setBox1Filter('asset', val)} selectedFailureMode={box1Filters.failureMode} onFailureModeChange={(val) => setBox1Filter('failureMode', val)} />}
             
-            {activeTab === 'b1_stats' && (
-                <div className="h-full">
-                    <Dashboard 
-                        data={box1Data} 
-                        inputMode="timestamp"
-                        selectedAsset={box1Filters.asset}
-                        onAssetChange={(val) => setBox1Filters(prev => ({...prev, asset: val}))}
-                        selectedMode={box1Filters.failureMode}
-                        onModeChange={(val) => setBox1Filters(prev => ({...prev, failureMode: val}))}
-                    />
-                </div>
-            )}
-
-            {activeTab === 'b1_trends' && (
-                <div className="h-full">
-                    <TrendAnalysis 
-                        data={box1Data}
-                        selectedAsset={box1Filters.asset}
-                    />
-                </div>
-            )}
-
-            {/* --- BOX 2 CONTENT --- */}
             {activeTab === 'b2_upload' && (
-                <div className="flex flex-col h-full gap-4">
+                <div className="flex flex-col h-full gap-6">
+                    <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between ring-1 ring-slate-900/5">
+                        <div className="flex items-center gap-3 px-3">
+                            <ShieldCheck size={18} className="text-emerald-500"/>
+                            <div>
+                                <p className="text-[9px] text-slate-400 font-black uppercase tracking-tighter">PM Strategy</p>
+                                <p className="text-[11px] font-black text-slate-700">
+                                    {pmPlanData.length > 0 ? `Plan: ${pmPlanData.length} tasks` : 'Load maintenance schedule'}
+                                </p>
+                            </div>
+                        </div>
+                        <div className="flex gap-2">
+                            <button 
+                                onClick={() => setIsGlossaryOpen(true)}
+                                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition border border-slate-200"
+                            >
+                                <HelpCircle size={16} /> Strategy Glossary
+                            </button>
+                            <label className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition shadow-lg cursor-pointer">
+                                <UploadCloud size={16} /> Import PM Strategy
+                                <input type="file" accept=".xlsx, .xls" className="hidden" onChange={(e) => e.target.files?.[0] && handleImportFile(e.target.files[0], 'box2')} />
+                            </label>
+                        </div>
+                    </div>
                      <div className="flex-1 min-h-0">
                         <PMDataGrid 
                             data={pmPlanData} 
-                            onUpdate={setPmPlanData} 
-                            title="Preventive Maintenance Plan"
-                            onAutoAssignTrades={handleAutoAssignTrades}
-                            loadingAI={loadingAI}
-                            enableCopy={true}
-                            externalAssetFilter={box2Filters.asset}
-                            externalTradeFilter={box2Filters.trade}
-                            externalFreqFilter={box2Filters.frequency}
-                            externalTypeFilter={box2Filters.executorType}
-                            externalCriticalityFilter={box2Filters.criticality}
-                            onGlobalFilterChange={(key, val) => setBox2Filters(prev => ({ ...prev, [key]: val }))}
+                            setData={setPmPlanData} 
+                            enableCopy={true} 
+                            loadingAI={loadingAI} 
+                            enrichingField={enrichingField}
+                            onEnrich={handleEnrichAttribute}
+                            filters={box2Filters} 
+                            onGlobalFilterChange={(k, v) => setBox2Filter(k, v)} 
+                            savedPlans={[]} 
                         />
                     </div>
                 </div>
             )}
-
-            {activeTab === 'b2_stats' && (
-                <div className="h-full">
-                    <PMDashboard 
-                        data={pmPlanData}
-                        selectedAsset={box2Filters.asset}
-                        onAssetChange={(val) => setBox2Filters(prev => ({...prev, asset: val}))}
-                        selectedTrade={box2Filters.trade}
-                        onTradeChange={(val) => setBox2Filters(prev => ({...prev, trade: val}))}
-                        selectedFreq={box2Filters.frequency}
-                        onFreqChange={(val) => setBox2Filters(prev => ({...prev, frequency: val}))}
-                        selectedType={box2Filters.executorType}
-                        onTypeChange={(val) => setBox2Filters(prev => ({...prev, executorType: val}))}
-                        selectedCriticality={box2Filters.criticality}
-                        onCriticalityChange={(val) => setBox2Filters(prev => ({...prev, criticality: val}))}
-                    />
-                </div>
-            )}
-
-            {activeTab === 'b2_opt' && (
-                <div className="h-full">
-                    <PMAuditPanel 
-                        pmData={pmPlanData}
-                        failureData={box1Data}
-                        loadingAI={loadingAI}
-                        setLoadingAI={setLoadingAI}
-                        selectedAsset={box2Filters.asset}
-                    />
-                </div>
-            )}
-
-            {activeTab === 'b2_cost_opt' && (
-                 <div className="h-full overflow-hidden">
-                    <OptimizationPanel 
-                        data={box1Data}
-                        inputMode="timestamp"
-                        costs={box1Costs}
-                        updateCost={updateCost}
-                        pmDuration={box1PmDuration}
-                        setPmDuration={setBox1PmDuration}
-                        optimalPM={box1OptimalPM}
-                        setOptimalPM={setBox1OptimalPM}
-                        aiAdvice={box1AiAdvice}
-                        setAiAdvice={setBox1AiAdvice}
-                        loadingAI={loadingAI}
-                        setLoadingAI={setLoadingAI}
-                        selectedAsset={box1Filters.asset}
-                        selectedMode={box1Filters.failureMode}
-                    />
-                </div>
-            )}
-
-            {/* --- BOX 3 CONTENT --- */}
-            {activeTab === 'b3_rcm' && (
-                <div className="h-full">
-                    <RCMGenerator />
-                </div>
-            )}
-
+            {activeTab === 'b2_stats' && <PMDashboard data={pmPlanData} filters={box2Filters} setFilter={(k, v) => setBox2Filter(k, v)} laborRate={box1Costs.preventive.labor} />}
+            {activeTab === 'b2_opt' && <PMAuditPanel pmPlanData={pmPlanData} box1Data={box1Data} loadingAI={loadingAI} setLoadingAI={setLoadingAI} box2Filters={box2Filters} setFilter={(k, v) => setBox2Filter(k, v)} />}
+            {activeTab === 'b2_cost' && <OptimizationPanel data={box1Data} filters={box1Filters} setBox1Filter={(k,v) => setBox1Filter(k, v)} costs={box1Costs} updateCost={updateCost} pmDuration={box1PmDuration} setPmDuration={setBox1PmDuration} loadingAI={loadingAI} setLoadingAI={setLoadingAI} inputMode="timestamp" />}
         </div>
+        <AIWizard contextBox={activeTab.startsWith('b1') ? 'box1' : 'box2'} dataSummary={`Records: ${activeTab.includes('b1') ? box1Data.length : pmPlanData.length}`} />
+        {importState && importState.open && <ImportWizard mode={importState.mode} rawHeaders={importState.headers} rawRows={importState.rows} onConfirm={handleImportConfirm} onCancel={() => setImportState(null)} />}
         
-        {/* Floating AI Wizard */}
-        <AIWizard contextBox={activeTab.startsWith('b1') ? 'box1' : 'box2'} dataSummary={dataSummary} />
+        {/* Strategy Glossary Modal */}
+        {isGlossaryOpen && (
+            <div className="fixed inset-0 bg-slate-950/80 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-200">
+                <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden ring-1 ring-white/20">
+                    <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                        <div className="flex items-center gap-4">
+                            <div className="p-3 bg-indigo-600 rounded-2xl shadow-lg shadow-indigo-600/20 text-white"><BookOpen size={24}/></div>
+                            <div>
+                                <h3 className="text-xl font-black text-slate-800 uppercase tracking-widest">Strategy & State Glossary</h3>
+                                <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Understanding RCM Strategy Classifications</p>
+                            </div>
+                        </div>
+                        <button onClick={() => setIsGlossaryOpen(false)} className="text-slate-400 hover:text-slate-600 transition p-2 hover:bg-slate-100 rounded-full"><X size={28}/></button>
+                    </div>
 
+                    <div className="flex-1 overflow-auto p-8 custom-scrollbar space-y-10 bg-white">
+                        <section>
+                            <h4 className="text-xs font-black text-indigo-600 uppercase tracking-[0.2em] mb-6 flex items-center gap-2 border-b border-indigo-100 pb-2">
+                                <ShieldCheck size={16}/> Maintenance Strategy Types
+                            </h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {[
+                                    { title: 'Time Based (PM)', desc: 'Maintenance performed at fixed intervals (e.g., Monthly). Best for parts with predictable wear patterns.', color: 'bg-blue-50 text-blue-700 border-blue-100' },
+                                    { title: 'Condition Based (PdM)', desc: 'Triggered by health indicators (vibration, heat). Only performed when failure is imminent.', color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
+                                    { title: 'Scheduled Restoration', desc: 'Shop-level overhaul to return asset to "as-new" condition at fixed intervals.', color: 'bg-purple-50 text-purple-700 border-purple-100' },
+                                    { title: 'Scheduled Replacement', desc: 'Removing an item and replacing with new before it has a chance to fail.', color: 'bg-amber-50 text-amber-700 border-amber-100' },
+                                    { title: 'Failure Finding', desc: 'Functional tests to check if hidden safety functions (valves, alarms) still work.', color: 'bg-rose-50 text-rose-700 border-rose-100' }
+                                ].map((item, idx) => (
+                                    <div key={idx} className={`p-5 rounded-2xl border ${item.color} flex flex-col gap-1 shadow-sm`}>
+                                        <h5 className="font-black text-[11px] uppercase tracking-wider">{item.title}</h5>
+                                        <p className="text-xs font-medium opacity-80 leading-relaxed">{item.desc}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </section>
+
+                        <section>
+                            <h4 className="text-xs font-black text-slate-500 uppercase tracking-[0.2em] mb-6 flex items-center gap-2 border-b border-indigo-100 pb-2">
+                                <Zap size={16}/> Operational State
+                            </h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="p-6 rounded-[2rem] bg-slate-50 border border-slate-200 flex flex-col items-center text-center shadow-sm">
+                                    <div className="p-3 bg-rose-50 rounded-2xl text-rose-600 mb-4 border border-rose-100 shadow-inner"><ZapOff size={24}/></div>
+                                    <h5 className="font-black text-slate-800 text-xs uppercase tracking-widest mb-2">Shutdown Required</h5>
+                                    <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                                        Asset must be fully stopped and isolated. This adds to "Planned Downtime" and impacts production capacity.
+                                    </p>
+                                </div>
+                                <div className="p-6 rounded-[2rem] bg-slate-50 border border-slate-200 flex flex-col items-center text-center shadow-sm">
+                                    <div className="p-3 bg-emerald-50 rounded-2xl text-emerald-600 mb-4 border border-emerald-100 shadow-inner"><Play size={24}/></div>
+                                    <h5 className="font-black text-slate-800 text-xs uppercase tracking-widest mb-2">Running Maintenance</h5>
+                                    <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                                        Maintenance is performed while the asset is online. Zero production loss. Ideal for condition monitoring.
+                                    </p>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+
+                    <div className="p-8 border-t bg-slate-50/50 flex justify-end shrink-0">
+                        <button 
+                            onClick={() => setIsGlossaryOpen(false)}
+                            className="px-10 py-3 rounded-2xl bg-slate-900 text-white font-black text-[10px] uppercase tracking-[0.2em] shadow-xl hover:bg-slate-800 transition-all active:scale-95 border border-white/10"
+                        >
+                            Close Glossary
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
       </main>
     </div>
   );

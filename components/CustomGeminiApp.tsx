@@ -31,12 +31,13 @@ const CustomGeminiApp: React.FC = () => {
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         
-        // Example: Using Gemini 2.5 Flash
+        // Fixed: Use 'gemini-3-flash-preview' for basic text tasks per guidelines.
         const result = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3-flash-preview',
             contents: input || "Hello from my custom integrated app!",
         });
         
+        // Fixed: Use the .text property (not a method) as per @google/genai guidelines.
         setResponse(result.text || "No response");
     } catch (e: any) {
         setResponse(`Error: ${e.message}`);
@@ -70,7 +71,7 @@ const CustomGeminiApp: React.FC = () => {
                         type="text" 
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        placeholder="Enter a prompt for Gemini 2.5 Flash..."
+                        placeholder="Enter a prompt for Gemini 3 Flash..."
                         className="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
                     />
                     <button 

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MessageSquare, X, Send, Bot, User, Loader2, Sparkles } from 'lucide-react';
 import { ChatMessage } from '../types';
 import { sendChatToWizard } from '../services/geminiService';
+import { useAppStore } from '../store';
 
 interface AIWizardProps {
   contextBox: 'box1' | 'box2';
@@ -10,6 +11,7 @@ interface AIWizardProps {
 }
 
 const AIWizard: React.FC<AIWizardProps> = ({ contextBox, dataSummary }) => {
+  const { language } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   
   const getContextName = (box: string) => {
@@ -20,27 +22,29 @@ const AIWizard: React.FC<AIWizardProps> = ({ contextBox, dataSummary }) => {
     }
   };
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-      {
-          id: 'welcome',
-          sender: 'ai',
-          text: `Hello! I'm your Reliability Wizard. I see you're working on ${getContextName(contextBox)}. How can I help?`,
-          timestamp: new Date()
+  const getWelcomeMessage = () => {
+      switch(language) {
+          case 'French': return `Bonjour ! Je suis votre Magicien de la Fiabilité. Je vois que vous travaillez sur ${getContextName(contextBox)}. Comment puis-je vous aider ?`;
+          case 'Spanish': return `¡Hola! Soy tu Mago de la Confiabilidad. Veo que estás trabajando en ${getContextName(contextBox)}. ¿En qué puedo ayudarte?`;
+          case 'German': return `Hallo! Ich bin Ihr Zuverlässigkeits-Assistent. Ich sehe, dass Sie an ${getContextName(contextBox)} arbeiten. Wie kann ich Ihnen helfen?`;
+          case 'Polish': return `Cześć! Jestem Twoim Kreatorem Niezawodności. Widzę, że pracujesz nad ${getContextName(contextBox)}. Jak mogę Ci pomóc?`;
+          default: return `Hello! I'm your Reliability Wizard. I see you're working on ${getContextName(contextBox)}. How can I help?`;
       }
-  ]);
+  };
+
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Reset welcome message when context changes
     setMessages([{
         id: `welcome-${Date.now()}`,
         sender: 'ai',
-        text: `Hello! I'm your Reliability Wizard. I see you're working on ${getContextName(contextBox)}. How can I help?`,
+        text: getWelcomeMessage(),
         timestamp: new Date()
     }]);
-  }, [contextBox]);
+  }, [contextBox, language]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -64,7 +68,7 @@ const AIWizard: React.FC<AIWizardProps> = ({ contextBox, dataSummary }) => {
       setInput('');
       setIsLoading(true);
 
-      const responseText = await sendChatToWizard(messages, input, contextBox, dataSummary);
+      const responseText = await sendChatToWizard(messages, input, contextBox, dataSummary, language);
       
       const aiMsg: ChatMessage = {
           id: (Date.now() + 1).toString(),
@@ -79,10 +83,8 @@ const AIWizard: React.FC<AIWizardProps> = ({ contextBox, dataSummary }) => {
 
   return (
     <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end">
-        {/* Chat Window */}
         {isOpen && (
             <div className="bg-white w-80 md:w-96 h-[500px] rounded-2xl shadow-2xl border border-gray-200 flex flex-col mb-4 overflow-hidden animate-in slide-in-from-bottom-5 fade-in duration-200">
-                {/* Header */}
                 <div className="bg-indigo-600 p-4 flex justify-between items-center text-white">
                     <div className="flex items-center gap-2">
                         <div className="bg-white/20 p-1.5 rounded-full">
@@ -98,7 +100,6 @@ const AIWizard: React.FC<AIWizardProps> = ({ contextBox, dataSummary }) => {
                     </button>
                 </div>
 
-                {/* Messages Area */}
                 <div className="flex-1 overflow-y-auto p-4 bg-gray-50 custom-scrollbar space-y-4">
                     {messages.map((msg) => (
                         <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -132,7 +133,6 @@ const AIWizard: React.FC<AIWizardProps> = ({ contextBox, dataSummary }) => {
                     <div ref={messagesEndRef} />
                 </div>
 
-                {/* Input Area */}
                 <div className="p-3 bg-white border-t border-gray-100">
                     <form 
                         onSubmit={(e) => { e.preventDefault(); handleSend(); }}
@@ -157,7 +157,6 @@ const AIWizard: React.FC<AIWizardProps> = ({ contextBox, dataSummary }) => {
             </div>
         )}
 
-        {/* Floating Button */}
         <button 
             onClick={() => setIsOpen(!isOpen)}
             className="group flex items-center justify-center w-14 h-14 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105"

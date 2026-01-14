@@ -1,475 +1,285 @@
-import React, { useMemo } from 'react';
-import { PMRecord } from '../types';
-import { normalizeFrequency } from '../utils/reliabilityMath';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
-import { Briefcase, Clock, Zap, AlertTriangle, Users, Filter, RefreshCcw, Presentation, Activity, AlertOctagon } from 'lucide-react';
+
+import React, { useMemo, useState } from 'react';
+import { PMRecord, MaintenanceRoute } from '../types';
+import { normalizeFrequency, exportChartAsPNG } from '../utils/reliabilityMath';
+import { 
+    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, 
+    ResponsiveContainer, PieChart, Pie, Cell, Legend, ReferenceLine
+} from 'recharts';
+import { 
+    Filter, RefreshCcw, Clock, Users, AlertOctagon, 
+    Activity, Euro, CheckCircle2, CalendarDays, Briefcase, 
+    LayoutGrid, HelpCircle, ShieldCheck, TrendingUp, Layers,
+    MapPin, ArrowRight, Sparkles, Zap, ChevronRight, Hash, Target, Camera
+} from 'lucide-react';
+import ResourcePlanning from './ResourcePlanning';
+import { useAppStore } from '../store';
 
 interface PMDashboardProps {
   data: PMRecord[];
-  selectedAsset: string;
-  onAssetChange: (val: string) => void;
-  selectedTrade: string;
-  onTradeChange: (val: string) => void;
-  selectedFreq: string;
-  onFreqChange: (val: string) => void;
-  selectedType: string;
-  onTypeChange: (val: string) => void;
-  selectedCriticality: string;
-  onCriticalityChange: (val: string) => void;
+  filters: { asset: string; trade: string; frequency: string; executorType: string; criticality: string; strategy: string; state: string };
+  setFilter: (key: string, value: string) => void;
+  laborRate?: number; 
 }
 
-const PMDashboard: React.FC<PMDashboardProps> = ({ 
-    data, 
-    selectedAsset, onAssetChange,
-    selectedTrade, onTradeChange,
-    selectedFreq, onFreqChange,
-    selectedType, onTypeChange,
-    selectedCriticality, onCriticalityChange
-}) => {
-  
-  // Filter Data based on Global Selections
+const CustomTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+        return (
+            <div className="bg-slate-900/90 backdrop-blur-md text-white p-4 rounded-2xl shadow-2xl text-[11px] border border-white/10 min-w-[160px] z-50 animate-in fade-in zoom-in-95 duration-200">
+                <p className="font-black border-b border-white/10 pb-2 mb-3 text-emerald-400 uppercase tracking-widest">{label}</p>
+                {payload.map((p: any, i: number) => (
+                    <div key={i} className="flex justify-between items-center gap-6 mb-2 last:mb-0">
+                        <div className="flex items-center gap-2">
+                            <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: p.color || p.fill }}></div>
+                            <span className="text-slate-400 font-bold">{p.name}:</span>
+                        </div>
+                        <span className="font-mono font-black text-white">
+                            {typeof p.value === 'number' ? p.value.toLocaleString(undefined, { maximumFractionDigits: 1 }) : p.value}
+                            {p.name.includes('Load') || p.name.includes('Hours') ? ' hrs' : ''}
+                        </span>
+                    </div>
+                ))}
+            </div>
+        );
+    }
+    return null;
+};
+
+const StatCard = ({ title, value, unit, subValue, icon: Icon, color, explanation, description }: { title: string, value: string, unit: string, subValue?: string, icon: any, color: string, explanation: string, description: string }) => {
+    const colorStyles: Record<string, string> = {
+        indigo: "text-indigo-600 bg-indigo-50 border-indigo-100 ring-indigo-500/10",
+        orange: "text-orange-600 bg-orange-50 border-orange-100 ring-orange-500/10",
+        emerald: "text-emerald-600 bg-emerald-50 border-emerald-100 ring-emerald-500/10",
+        purple: "text-purple-600 bg-purple-50 border-purple-100 ring-purple-100/10",
+        rose: "text-rose-600 bg-rose-50 border-rose-100 ring-rose-500/10",
+    };
+    const style = colorStyles[color] || colorStyles.indigo;
+
+    return (
+        <div className="relative group overflow-hidden bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm hover:shadow-2xl hover:-translate-y-1 transition-all duration-500 ring-1 ring-slate-950/[0.03]">
+            <div className="relative z-10 flex flex-col h-full">
+                <div className="flex items-center gap-4 mb-5">
+                    <div className={`p-3 rounded-2xl shadow-sm ${style} transition-transform group-hover:scale-110 duration-500`}>
+                        <Icon size={24} />
+                    </div>
+                    <div>
+                        <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{title}</h3>
+                        <p className="text-[10px] font-bold text-slate-500 leading-tight mt-0.5 uppercase">{explanation}</p>
+                    </div>
+                </div>
+                
+                <div className="mt-auto">
+                    <div className="flex items-baseline gap-2">
+                        <span className="text-4xl font-black text-slate-900 tracking-tighter uppercase">{value}</span>
+                        <span className="text-xs font-black text-slate-400 uppercase tracking-widest">{unit}</span>
+                    </div>
+                    {subValue && (
+                        <div className="mt-4 flex items-center gap-2 bg-slate-50 py-1.5 px-3 rounded-full border border-slate-100 w-fit">
+                             <div className={`h-1.5 w-1.5 rounded-full animate-pulse ${style.split(' ')[0]}`}></div>
+                             <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">{subValue}</span>
+                        </div>
+                    )}
+                </div>
+            </div>
+            <div className="absolute top-6 right-6 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                <div className="relative">
+                    <HelpCircle size={18} className="text-slate-300 peer cursor-help hover:text-emerald-500 transition-colors" />
+                    <div className="absolute right-0 top-8 w-64 bg-slate-900/95 backdrop-blur-md text-white text-[10px] p-5 rounded-2xl shadow-2xl hidden peer-hover:block z-50 leading-relaxed border border-white/10 animate-in fade-in slide-in-from-top-2 duration-200">
+                        <p className="font-black text-emerald-400 mb-2 uppercase tracking-[0.15em] border-b border-white/10 pb-2">Strategy Context</p>
+                        <p className="text-slate-300 font-medium">{description}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const SectionHeader = ({ title, description, icon: Icon, iconColor }: any) => (
+    <div className="mb-10 pl-2">
+        <div className="flex items-center gap-4">
+            <div className={`p-2.5 rounded-xl bg-white border border-slate-200 shadow-sm ${iconColor}`}>
+                <Icon size={24} />
+            </div>
+            <h3 className="text-lg font-black text-slate-900 uppercase tracking-widest">{title}</h3>
+        </div>
+        <p className="text-[11px] text-slate-500 mt-3 font-bold uppercase tracking-widest max-w-2xl leading-relaxed pl-[64px] border-l-2 border-slate-100 ml-[20px]">{description}</p>
+    </div>
+);
+
+const PMDashboard: React.FC<PMDashboardProps> = ({ data, filters, setFilter, laborRate = 25 }) => {
+  const [activeTab, setActiveTab] = useState<'overview' | 'resources'>('overview');
+  const { resources } = useAppStore();
+
+  const assetList = useMemo(() => Array.from(new Set(data.map(r => r.asset || 'Unknown'))).filter(Boolean).sort(), [data]);
+  const tradeList = useMemo(() => Array.from(new Set(data.map(r => r.trade || 'Unassigned'))).filter(Boolean).sort(), [data]);
+  const strategyList = useMemo(() => Array.from(new Set(data.map(r => r.taskType || 'Unassigned'))).filter(Boolean).sort(), [data]);
+
   const filteredData = useMemo(() => {
       return data.filter(r => {
-          const matchAsset = selectedAsset === 'All' || r.asset === selectedAsset;
-          const matchTrade = selectedTrade === 'All' || r.trade === selectedTrade;
-          const matchFreq = selectedFreq === 'All' || r.frequency === selectedFreq;
-          const matchType = selectedType === 'All' || r.executorType === selectedType;
-          const matchCrit = selectedCriticality === 'All' || (r.criticality || 'Medium') === selectedCriticality;
-          return matchAsset && matchTrade && matchFreq && matchType && matchCrit;
+          if (filters.asset !== 'All' && r.asset !== filters.asset) return false;
+          if (filters.trade !== 'All' && r.trade !== filters.trade) return false;
+          if (filters.frequency !== 'All' && r.frequency !== filters.frequency) return false;
+          if (filters.executorType !== 'All' && r.executorType !== filters.executorType) return false;
+          if (filters.criticality !== 'All' && r.criticality !== filters.criticality) return false;
+          if (filters.strategy !== 'All' && r.taskType !== filters.strategy) return false;
+          if (filters.state !== 'All') {
+              const isShutdown = filters.state === 'Shutdown';
+              if (r.shutdownRequired !== isShutdown) return false;
+          }
+          return true;
       });
-  }, [data, selectedAsset, selectedTrade, selectedFreq, selectedType, selectedCriticality]);
+  }, [data, filters]);
 
-  // Unique Lists for Dropdowns
-  const uniqueAssets = useMemo(() => Array.from(new Set(data.map(r => r.asset || 'Unknown'))).sort(), [data]);
-  const uniqueTrades = useMemo(() => Array.from(new Set(data.map(r => r.trade || 'General'))).sort(), [data]);
-  const uniqueFreqs = useMemo(() => Array.from(new Set(data.map(r => r.frequency || '1'))).sort((a: string, b: string) => parseFloat(a) - parseFloat(b)), [data]);
-  const uniqueTypes = useMemo(() => Array.from(new Set(data.map(r => r.executorType || 'Internal'))).sort(), [data]);
-  const uniqueCrits = useMemo(() => ['High', 'Medium', 'Low'], []);
-
-  // 1. Calculate Annual Workload (Hours) per Trade
   const workloadData = useMemo(() => {
     const tradeHours: Record<string, number> = {};
-    // Iterate over filtered data so charts reflect current view
     filteredData.forEach(task => {
-        const freqPerYear = normalizeFrequency(task.frequency);
-        const hoursPerEvent = task.estimatedDuration;
-        const people = task.numberOfExecutors || 1;
-        const annualManHours = freqPerYear * hoursPerEvent * people;
-        
-        const trade = task.trade || 'Other';
-        tradeHours[trade] = (tradeHours[trade] || 0) + annualManHours;
+        const h = normalizeFrequency(task.frequency) * task.estimatedDuration * (task.numberOfExecutors||1);
+        tradeHours[task.trade||'Other'] = (tradeHours[task.trade||'Other']||0) + h;
     });
-    return Object.entries(tradeHours)
-        .map(([name, value]) => ({ name, value }))
-        .sort((a,b) => b.value - a.value);
+    return Object.entries(tradeHours).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
   }, [filteredData]);
 
-  const totalAnnualHours = workloadData.reduce((acc, curr) => acc + curr.value, 0);
-
-  // 2. Shutdown vs Running
-  const shutdownData = useMemo(() => {
-      let shut = 0;
-      let run = 0;
-      filteredData.forEach(t => t.shutdownRequired ? shut++ : run++);
-      return [
-          { name: 'Running', value: run },
-          { name: 'Shutdown', value: shut }
-      ];
-  }, [filteredData]);
-
-  // 3. Internal vs Contractor vs Mixed
-  const executorData = useMemo(() => {
-      let internalHours = 0;
-      let contractorHours = 0;
-      let mixedHours = 0;
-      
-      filteredData.forEach(task => {
-        const freqPerYear = normalizeFrequency(task.frequency);
-        const hoursPerEvent = task.estimatedDuration;
-        const people = task.numberOfExecutors || 1;
-        const annualManHours = freqPerYear * hoursPerEvent * people;
-
-        if (task.executorType === 'Contractor') {
-            contractorHours += annualManHours;
-        } else if (task.executorType === 'Internal + Contractor') {
-            mixedHours += annualManHours;
-        } else {
-            internalHours += annualManHours;
-        }
-      });
-      return [
-          { name: 'Internal', value: internalHours },
-          { name: 'Contractor', value: contractorHours },
-          { name: 'Mixed', value: mixedHours } // Ensure case matches data
-      ].filter(d => d.value > 0);
-  }, [filteredData]);
-
-  // 4. MTA Strategy Mix (Task Count)
   const strategyData = useMemo(() => {
-      const counts = { 'TBM': 0, 'CBM': 0, 'FF': 0, 'Unknown': 0 };
-      filteredData.forEach(t => {
-          const type = t.taskType || 'Unknown';
-          if (counts[type] !== undefined) counts[type]++;
-          else counts['Unknown']++;
+      const c: Record<string, number> = {};
+      filteredData.forEach(t => { 
+          const type = t.taskType || 'Unassigned';
+          c[type] = (c[type] || 0) + 1; 
       });
-      return [
-          { name: 'CBM (Condition)', value: counts['CBM'] },
-          { name: 'TBM (Time-Based)', value: counts['TBM'] },
-          { name: 'FF (Failure Finding)', value: counts['FF'] },
-      ].filter(d => d.value > 0);
+      return Object.entries(c).map(([name,value])=>({name,value})).filter(d=>d.value>0);
   }, [filteredData]);
 
-  // 5. Criticality Distribution
-  const criticalityData = useMemo(() => {
-      const counts = { 'High': 0, 'Medium': 0, 'Low': 0 };
-      filteredData.forEach(t => {
-          const c = t.criticality || 'Medium';
-          if (counts[c] !== undefined) counts[c]++;
-          else counts['Medium']++;
-      });
-      return [
-          { name: 'High', value: counts['High'] },
-          { name: 'Medium', value: counts['Medium'] },
-          { name: 'Low', value: counts['Low'] }
-      ].filter(d => d.value > 0);
-  }, [filteredData]);
-
-  const COLORS_EXECUTOR = {
-      'Internal': '#3b82f6',
-      'Contractor': '#f97316',
-      'Mixed': '#a855f7'
-  };
-
-  const COLORS_CRIT = {
-      'High': '#dc2626',
-      'Medium': '#f59e0b',
-      'Low': '#10b981'
-  };
-
-  const handleReset = () => {
-      onAssetChange('All');
-      onTradeChange('All');
-      onFreqChange('All');
-      onTypeChange('All');
-      onCriticalityChange('All');
-  };
-
-  const handleChartClick = (data: any, type: 'trade' | 'executor' | 'criticality') => {
-      if (data && data.activePayload && data.activePayload.length > 0) {
-          const clickedName = data.activePayload[0].payload.name;
-          if (type === 'trade') {
-              onTradeChange(clickedName === selectedTrade ? 'All' : clickedName);
-          } else if (type === 'executor') {
-              onTypeChange(clickedName === selectedType ? 'All' : clickedName);
-          } else if (type === 'criticality') {
-              onCriticalityChange(clickedName === selectedCriticality ? 'All' : clickedName);
-          }
-      }
-  };
-
-  const getOpacity = (entryName: string, type: 'trade' | 'executor' | 'criticality') => {
-       if (type === 'trade') {
-           return (selectedTrade === 'All' || selectedTrade === entryName) ? 1 : 0.3;
-       }
-       if (type === 'executor') {
-           return (selectedType === 'All' || selectedType === entryName) ? 1 : 0.3;
-       }
-       if (type === 'criticality') {
-           return (selectedCriticality === 'All' || selectedCriticality === entryName) ? 1 : 0.3;
-       }
-       return 1;
-  };
-
-  const handleExportPPT = () => {
-      const pptx = new (window as any).PptxGenJS();
-      pptx.layout = 'LAYOUT_16x9';
-      
-      const slide = pptx.addSlide();
-      slide.addText("Preventive Maintenance Analytics", { x: 0.5, y: 0.5, fontSize: 24, bold: true, color: '363636' });
-      slide.addText(`Asset: ${selectedAsset}, Trade: ${selectedTrade}, Criticality: ${selectedCriticality}`, { x: 0.5, y: 1.0, fontSize: 14, color: '666666' });
-
-      // KPI Boxes
-      slide.addText(`Total Tasks: ${filteredData.length}`, { x: 0.5, y: 1.5, w: 3, h: 1, fill: 'EEF2FF', align: 'center', valign:'middle', fontSize:18 });
-      slide.addText(`Annual Man-Hours: ${totalAnnualHours.toFixed(0)}`, { x: 3.7, y: 1.5, w: 3, h: 1, fill: 'ECFDF5', align: 'center', valign:'middle', fontSize:18 });
-      slide.addText(`Avg Criticality: ${criticalityData.length > 0 ? 'Analyzed' : 'N/A'}`, { x: 6.9, y: 1.5, w: 3, h: 1, fill: 'FEF2F2', align: 'center', valign:'middle', fontSize:18 });
-
-      // Charts
-      if (workloadData.length > 0) {
-          slide.addText("Workload by Trade", { x: 0.5, y: 3.0, fontSize: 14 });
-          slide.addChart(pptx.ChartType.bar, 
-            [{
-                name: "Man-Hours",
-                labels: workloadData.map(d => d.name),
-                values: workloadData.map(d => d.value)
-            }],
-            { x: 0.5, y: 3.5, w: 5, h: 3.5, barDir: 'col', chartColors: ['10b981'] }
-          );
-      }
-
-      if (executorData.length > 0) {
-          slide.addText("Internal vs Contractor", { x: 6, y: 3.0, fontSize: 14 });
-          slide.addChart(pptx.ChartType.pie, 
-            [{
-                name: "Hours",
-                labels: executorData.map(d => d.name),
-                values: executorData.map(d => d.value)
-            }],
-            { x: 6, y: 3.5, w: 4, h: 3.5 }
-          );
-      }
-
-      pptx.writeFile({ fileName: `PM_Analytics_${selectedAsset}.pptx` });
-  };
+  const strategyColors = ["#6366F1", "#10B981", "#F59E0B", "#8B5CF6", "#F43F5E"];
 
   return (
-    <div className="space-y-6">
-        {/* --- Filters Toolbar --- */}
-        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 flex flex-wrap items-center gap-4 sticky top-0 z-20">
-            <div className="flex items-center gap-2 text-gray-700 font-medium">
-                <Filter size={20} className="text-emerald-600"/>
-                <span>Filters:</span>
-            </div>
-            
-            {/* Asset Filter */}
-            <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-gray-400 uppercase font-bold">Asset</label>
-                <select 
-                    value={selectedAsset}
-                    onChange={(e) => onAssetChange(e.target.value)}
-                    className={`bg-gray-50 border text-gray-900 text-xs rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block w-40 p-2 ${selectedAsset !== 'All' ? 'border-emerald-500 bg-emerald-50 font-bold' : 'border-gray-300'}`}
-                >
-                    <option value="All">All Assets</option>
-                    {uniqueAssets.map(a => <option key={a} value={a}>{a}</option>)}
-                </select>
-            </div>
-
-            {/* Trade Filter */}
-            <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-gray-400 uppercase font-bold">Trade</label>
-                <select 
-                    value={selectedTrade}
-                    onChange={(e) => onTradeChange(e.target.value)}
-                    className={`bg-gray-50 border text-gray-900 text-xs rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block w-28 p-2 ${selectedTrade !== 'All' ? 'border-emerald-500 bg-emerald-50 font-bold' : 'border-gray-300'}`}
-                >
-                    <option value="All">All Trades</option>
-                    {uniqueTrades.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-            </div>
-
-            {/* Criticality Filter */}
-             <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-gray-400 uppercase font-bold">Criticality</label>
-                <select 
-                    value={selectedCriticality}
-                    onChange={(e) => onCriticalityChange(e.target.value)}
-                    className={`bg-gray-50 border text-gray-900 text-xs rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block w-24 p-2 ${selectedCriticality !== 'All' ? 'border-emerald-500 bg-emerald-50 font-bold' : 'border-gray-300'}`}
-                >
-                    <option value="All">All</option>
-                    {uniqueCrits.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-            </div>
-
-             {/* Interval Filter */}
-             <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-gray-400 uppercase font-bold">Interval (M)</label>
-                <select 
-                    value={selectedFreq}
-                    onChange={(e) => onFreqChange(e.target.value)}
-                    className={`bg-gray-50 border text-gray-900 text-xs rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block w-20 p-2 ${selectedFreq !== 'All' ? 'border-emerald-500 bg-emerald-50 font-bold' : 'border-gray-300'}`}
-                >
-                    <option value="All">All</option>
-                    {uniqueFreqs.map(f => <option key={f} value={f}>{f}</option>)}
-                </select>
-            </div>
-
-             {/* Type Filter */}
-             <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-gray-400 uppercase font-bold">Executor</label>
-                <select 
-                    value={selectedType}
-                    onChange={(e) => onTypeChange(e.target.value)}
-                    className={`bg-gray-50 border text-gray-900 text-xs rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block w-24 p-2 ${selectedType !== 'All' ? 'border-emerald-500 bg-emerald-50 font-bold' : 'border-gray-300'}`}
-                >
-                    <option value="All">All</option>
-                    {uniqueTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-            </div>
-
-            <div className="ml-auto flex items-center gap-2">
-                <button 
-                    onClick={handleExportPPT}
-                    className="flex items-center gap-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 px-3 py-1.5 rounded-lg text-sm font-medium transition border border-emerald-200"
-                    title="Export Dashboard to PowerPoint"
-                >
-                    <Presentation size={16} /> PPT
+    <div className="space-y-12 animate-in fade-in duration-700 pb-20 px-2">
+        <div className="bg-white/80 backdrop-blur-2xl p-3 rounded-[2.5rem] shadow-2xl border border-white/50 flex flex-wrap gap-4 items-center justify-between sticky top-4 z-40 mx-2 ring-1 ring-slate-950/5">
+            <div className="flex bg-slate-100/60 p-1.5 rounded-2xl border border-slate-200/50">
+                <button onClick={() => setActiveTab('overview')} className={`flex items-center gap-3 px-8 py-3 rounded-[1.25rem] text-xs font-black transition-all duration-300 ${activeTab === 'overview' ? 'bg-white shadow-xl text-emerald-600 ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-800'}`}>
+                    <LayoutGrid size={18}/> STRATEGY MODEL
                 </button>
-                <button 
-                    onClick={handleReset}
-                    className="flex items-center gap-1 text-sm text-gray-500 hover:text-emerald-600 transition"
-                >
-                    <RefreshCcw size={14} /> Reset
+                <button onClick={() => setActiveTab('resources')} className={`flex items-center gap-3 px-8 py-3 rounded-[1.25rem] text-xs font-black transition-all duration-300 ${activeTab === 'resources' ? 'bg-white shadow-xl text-blue-600 ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-800'}`}>
+                    <Briefcase size={18}/> CAPACITY PLAN
+                </button>
+            </div>
+
+            <div className="flex flex-1 items-center gap-3 px-4 overflow-x-auto no-scrollbar">
+                {[
+                    { key: 'asset', icon: Filter, options: assetList, label: 'Asset' },
+                    { key: 'trade', icon: Briefcase, options: tradeList, label: 'Trade' },
+                    { key: 'strategy', icon: Target, options: strategyList, label: 'Strategy' }
+                ].map((item) => (
+                    <div key={item.key} className="flex items-center gap-2 bg-white px-4 py-2.5 rounded-2xl border border-slate-200 shadow-sm shrink-0 transition-all hover:border-emerald-300 focus-within:ring-2 focus-within:ring-emerald-50">
+                        <item.icon size={14} className="text-slate-400" />
+                        <select 
+                            value={(filters as any)[item.key]} 
+                            onChange={(e) => setFilter(item.key, e.target.value)}
+                            className="text-[10px] font-black uppercase outline-none bg-transparent min-w-[120px] cursor-pointer"
+                        >
+                            <option value="All">All {item.label}s</option>
+                            {item.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
+                    </div>
+                ))}
+            </div>
+
+            <div className="flex gap-3 px-2">
+                <button onClick={() => {
+                    setFilter('asset', 'All');
+                    setFilter('trade', 'All');
+                    setFilter('frequency', 'All');
+                    setFilter('strategy', 'All');
+                    setFilter('executorType', 'All');
+                    setFilter('criticality', 'All');
+                    setFilter('state', 'All');
+                }} className="p-3 rounded-2xl bg-slate-900 border border-slate-800 hover:bg-emerald-600 text-white transition-all shadow-lg shrink-0" title="Reset All Filters">
+                    <RefreshCcw size={20}/>
                 </button>
             </div>
         </div>
 
-        {/* KPI Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative overflow-hidden">
-                <p className="text-xs text-gray-500 font-bold uppercase">Filtered Tasks</p>
-                <div className="flex items-center gap-2 mt-2">
-                    <p className="text-3xl font-bold text-gray-800">{filteredData.length}</p>
-                    <Briefcase className="text-gray-300" />
+        {activeTab === 'resources' ? (
+             <ResourcePlanning pmData={data} />
+        ) : (
+            <>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6 px-2">
+                    <StatCard title="Tasks" explanation="Active Activities" value={filteredData.length.toString()} unit="qty" icon={CheckCircle2} color="indigo" description="Unique PM jobs in plan." />
+                    <StatCard title="Annual Load" explanation="Capacity Hours" value={workloadData.reduce((a,b)=>a+b.value,0).toFixed(0)} unit="hrs" icon={Clock} color="emerald" description="Cumulative annual maintenance man-hours." />
+                    <StatCard title="Budget Est." explanation="Labor Spend" value={(workloadData.reduce((a,b)=>a+b.value,0) * laborRate).toLocaleString()} unit="€" icon={Euro} color="purple" description="Projected annual labor spend." />
+                    <StatCard title="Criticality" explanation="Strategic Risk" value={(filteredData.length ? (filteredData.filter(t=>t.criticality==='High').length/filteredData.length)*100 : 0).toFixed(0)} unit="%" icon={AlertOctagon} color="rose" description="Percentage of tasks on high-criticality assets." />
                 </div>
-                {selectedAsset !== 'All' && <p className="text-xs text-emerald-600 mt-1 font-semibold">Asset: {selectedAsset}</p>}
-                {selectedCriticality !== 'All' && <p className="text-xs text-red-600 mt-0.5 font-semibold">Criticality: {selectedCriticality}</p>}
-            </div>
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-                <p className="text-xs text-gray-500 font-bold uppercase">Annual Man-Hours</p>
-                <div className="flex items-center gap-2 mt-2">
-                    <p className="text-3xl font-bold text-emerald-600">{totalAnnualHours.toFixed(0)}</p>
-                    <span className="text-sm text-gray-400">hrs/year</span>
+
+                <div className="space-y-12">
+                    <SectionHeader title="Resource Distribution & Strategy Alignment" description="Visual breakdown of annual workload requirements and tactical maintenance methodologies." icon={ShieldCheck} iconColor="text-indigo-600" />
+                    
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                        <div id="chart-annual-workload" className="bg-white p-12 rounded-[3.5rem] shadow-xl border border-slate-100 h-[40rem] flex flex-col ring-1 ring-slate-950/[0.03] transition-all hover:shadow-2xl duration-500 group/chart">
+                            <div className="flex justify-between items-center mb-10">
+                                <h4 className="font-black text-slate-900 text-xs tracking-[0.25em] uppercase flex items-center gap-4">
+                                    <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-100"><Clock size={20}/></div>
+                                    Annual Workload by Trade (Hrs)
+                                </h4>
+                                <button onClick={() => exportChartAsPNG('chart-annual-workload', 'Annual_Workload_By_Trade')} className="p-3 bg-slate-50 text-slate-400 hover:text-indigo-600 rounded-2xl border border-slate-100 opacity-0 group-hover/chart:opacity-100 transition-all hover:shadow-md">
+                                    <Camera size={18}/>
+                                </button>
+                            </div>
+                            <div className="flex-1 min-h-0">
+                                <ResponsiveContainer>
+                                    <BarChart layout="vertical" data={workloadData} barSize={32} margin={{left: 30, right: 30}}>
+                                        <defs>
+                                            <linearGradient id="colorWorkload" x1="0" y1="0" x2="1" y2="0">
+                                                <stop offset="0%" stopColor="#10B981" stopOpacity={0.8}/>
+                                                <stop offset="100%" stopColor="#10B981" stopOpacity={1}/>
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="4 4" horizontal={true} vertical={false} stroke="#f1f5f9"/>
+                                        <XAxis type="number" stroke="#cbd5e1" fontSize={10} fontWeight="800" axisLine={false} tickLine={false} />
+                                        <YAxis dataKey="name" type="category" width={110} stroke="#64748b" fontSize={11} fontWeight="900" axisLine={false} tickLine={false}/>
+                                        <Tooltip content={<CustomTooltip/>}/>
+                                        <Bar dataKey="value" name="Annual Hours" fill="url(#colorWorkload)" radius={[0,12,12,0]} animationDuration={2000} />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </div>
+
+                        <div id="chart-strategy-mix" className="bg-white p-12 rounded-[3.5rem] shadow-xl border border-slate-100 h-[40rem] flex flex-col ring-1 ring-slate-950/[0.03] transition-all hover:shadow-2xl duration-500 group/chart">
+                            <div className="flex justify-between items-center mb-10">
+                                <h4 className="font-black text-slate-900 text-xs tracking-[0.25em] uppercase flex items-center gap-4">
+                                    <div className="p-2 rounded-xl bg-purple-50 text-purple-600 border border-purple-100"><Activity size={20}/></div>
+                                    Strategic Maintenance Methodology Mix
+                                </h4>
+                                <button onClick={() => exportChartAsPNG('chart-strategy-mix', 'Maintenance_Strategy_Mix')} className="p-3 bg-slate-50 text-slate-400 hover:text-indigo-600 rounded-2xl border border-slate-100 opacity-0 group-hover/chart:opacity-100 transition-all hover:shadow-md">
+                                    <Camera size={18}/>
+                                </button>
+                            </div>
+                            <div className="flex-1 min-h-0">
+                                <ResponsiveContainer>
+                                    <PieChart>
+                                        <Pie 
+                                            data={strategyData} 
+                                            dataKey="value" 
+                                            nameKey="name" 
+                                            cx="50%" 
+                                            cy="50%" 
+                                            innerRadius={90} 
+                                            outerRadius={140} 
+                                            paddingAngle={8}
+                                            stroke="none"
+                                            animationDuration={1500}
+                                        >
+                                            {strategyData.map((entry, index) => (
+                                                <Cell key={`cell-${index}`} fill={strategyColors[index % strategyColors.length]} className="hover:opacity-80 transition-opacity duration-300 outline-none" />
+                                            ))}
+                                        </Pie>
+                                        <Tooltip content={<CustomTooltip/>}/>
+                                        <Legend verticalAlign="bottom" height={40} iconType="circle" wrapperStyle={{ paddingTop: '20px', fontWeight: '900', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em' }} />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            </div>
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-                <p className="text-xs text-gray-500 font-bold uppercase">High Criticality Load</p>
-                <div className="flex items-center gap-2 mt-2">
-                    <p className="text-3xl font-bold text-red-600">
-                        {filteredData.length > 0 
-                            ? (filteredData.filter(t => t.criticality === 'High').length / filteredData.length * 100).toFixed(0)
-                            : 0}%
-                    </p>
-                    <AlertTriangle className="text-red-200" />
-                </div>
-                <p className="text-xs text-gray-400 mt-1">% of Tasks on High Crit Assets</p>
-            </div>
-        </div>
-
-        {/* Charts Row 1 */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Workload Chart */}
-            <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-96">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <Clock size={18} className="text-emerald-500"/> Annual Workload by Trade
-                </h3>
-                <ResponsiveContainer width="100%" height="90%">
-                    <BarChart 
-                        data={workloadData} 
-                        layout="vertical" 
-                        margin={{ left: 20 }}
-                        onClick={(data) => handleChartClick(data, 'trade')}
-                    >
-                        <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                        <XAxis type="number" />
-                        <YAxis dataKey="name" type="category" width={100} tick={{fontSize: 12}} />
-                        <Tooltip 
-                            cursor={{fill: '#ecfdf5', opacity: 0.5}}
-                            formatter={(val: number) => [val.toFixed(1) + ' hrs', 'Annual Man-Hours']} 
-                        />
-                        <Bar 
-                            dataKey="value" 
-                            radius={[0, 4, 4, 0]} 
-                            barSize={30}
-                            className="cursor-pointer"
-                        >
-                            {workloadData.map((entry, index) => (
-                                <Cell 
-                                    key={`cell-${index}`} 
-                                    fill="#10b981" 
-                                    fillOpacity={getOpacity(entry.name, 'trade')}
-                                />
-                            ))}
-                        </Bar>
-                    </BarChart>
-                </ResponsiveContainer>
-            </div>
-
-            {/* Criticality Split */}
-            <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-96">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <AlertOctagon size={18} className="text-red-500"/> Task Criticality Distribution
-                </h3>
-                <ResponsiveContainer width="100%" height="90%">
-                    <PieChart onClick={(data) => handleChartClick(data, 'criticality')}>
-                        <Pie 
-                            data={criticalityData} 
-                            cx="50%" cy="50%" 
-                            innerRadius={60} outerRadius={100} 
-                            paddingAngle={5} 
-                            dataKey="value"
-                            className="cursor-pointer"
-                        >
-                             {criticalityData.map((entry, index) => (
-                                <Cell 
-                                    key={`cell-${index}`} 
-                                    fill={COLORS_CRIT[entry.name as keyof typeof COLORS_CRIT] || '#9ca3af'} 
-                                    fillOpacity={getOpacity(entry.name, 'criticality')}
-                                />
-                            ))}
-                        </Pie>
-                        <Tooltip formatter={(val: number) => [val, 'Tasks']} />
-                        <Legend />
-                    </PieChart>
-                </ResponsiveContainer>
-            </div>
-        </div>
-
-        {/* Charts Row 2 */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-             {/* Strategy Mix */}
-             <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-96">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <Activity size={18} className="text-purple-600"/> MTA Strategy Mix (Task Count)
-                </h3>
-                <ResponsiveContainer width="100%" height="90%">
-                    <PieChart>
-                        <Pie 
-                            data={strategyData} 
-                            cx="50%" cy="50%" 
-                            outerRadius={100} 
-                            dataKey="value"
-                            label={({ name, percent }) => `${(percent * 100).toFixed(0)}%`}
-                        >
-                            {strategyData.map((entry, index) => (
-                                <Cell 
-                                    key={`cell-${index}`} 
-                                    fill={entry.name.includes('CBM') ? '#22c55e' : entry.name.includes('TBM') ? '#3b82f6' : '#f59e0b'} 
-                                />
-                            ))}
-                        </Pie>
-                        <Tooltip />
-                        <Legend />
-                    </PieChart>
-                </ResponsiveContainer>
-            </div>
-
-             {/* Executor Split */}
-             <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-96">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <Users size={18} className="text-blue-500"/> Internal vs Contractor (Man-Hours)
-                </h3>
-                <ResponsiveContainer width="100%" height="90%">
-                    <PieChart onClick={(data) => handleChartClick(data, 'executor')}>
-                        <Pie 
-                            data={executorData} 
-                            cx="50%" cy="50%" 
-                            innerRadius={0} outerRadius={80} 
-                            dataKey="value"
-                            className="cursor-pointer"
-                        >
-                             {executorData.map((entry, index) => (
-                                <Cell 
-                                    key={`cell-${index}`} 
-                                    fill={COLORS_EXECUTOR[entry.name as keyof typeof COLORS_EXECUTOR] || '#9ca3af'} 
-                                    fillOpacity={getOpacity(entry.name, 'executor')}
-                                />
-                            ))}
-                        </Pie>
-                        <Tooltip formatter={(val: number) => [val.toFixed(0) + ' hrs', 'Load']} />
-                        <Legend />
-                    </PieChart>
-                </ResponsiveContainer>
-            </div>
-        </div>
+            </>
+        )}
     </div>
   );
 };
