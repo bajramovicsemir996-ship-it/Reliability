@@ -1,50 +1,149 @@
+
 import { RawRecord, StoppageType, WeibullParams, InputMode, ReliabilityMetrics, PMRecord, CrowAMSAA, RollingMetric, ImportMode, FieldMapping } from "../types";
 
 declare global {
   interface Window {
     XLSX: any;
+    PptxGenJS: any;
   }
 }
 
 /**
- * Utility to export an SVG element from Recharts to a PNG file
+ * Robust Utility to capture a DOM element (like a chart container) as a base64 image.
+ * Uses a hidden canvas and XMLSerializer with explicit background handling.
  */
-export const exportChartAsPNG = (containerId: string, fileName: string) => {
+const getChartBase64 = async (containerId: string): Promise<string | null> => {
     const container = document.getElementById(containerId);
-    if (!container) return;
+    if (!container) return null;
+    
     const svg = container.querySelector('svg');
-    if (!svg) return;
+    if (!svg) return null;
+
+    // Explicitly set dimensions to ensure visibility
+    const bbox = svg.getBoundingClientRect();
+    const width = bbox.width || 800;
+    const height = bbox.height || 400;
 
     const svgData = new XMLSerializer().serializeToString(svg);
     const canvas = document.createElement('canvas');
-    const svgSize = svg.getBoundingClientRect();
-    
-    // Use 2x scale for higher resolution (retina/print quality)
-    const scale = 2;
-    canvas.width = svgSize.width * scale;
-    canvas.height = svgSize.height * scale;
-    
+    const scale = 2; // High resolution
+    canvas.width = width * scale;
+    canvas.height = height * scale;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) return null;
 
-    const img = new Image();
-    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(svgBlob);
+    return new Promise((resolve) => {
+        const img = new Image();
+        const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(svgBlob);
 
-    img.onload = () => {
-        ctx.fillStyle = "white"; // Background fill for clean export
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const pngUrl = canvas.toDataURL('image/png');
-        const downloadLink = document.createElement('a');
-        downloadLink.href = pngUrl;
-        downloadLink.download = `${fileName}.png`;
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        document.body.removeChild(downloadLink);
-        URL.revokeObjectURL(url);
-    };
-    img.src = url;
+        img.onload = () => {
+            ctx.fillStyle = "white"; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            const base64 = canvas.toDataURL('image/png');
+            URL.revokeObjectURL(url);
+            resolve(base64);
+        };
+        img.onerror = () => resolve(null);
+        img.src = url;
+    });
+};
+
+/**
+ * Workflow Integration: Generate a professional PowerPoint report
+ */
+export const generateReliabilityPresentation = async (datasetName: string, metrics: ReliabilityMetrics) => {
+    const pptx = new window.PptxGenJS();
+    pptx.layout = 'LAYOUT_16x9';
+
+    // 1. Title Slide
+    const slide1 = pptx.addSlide();
+    slide1.background = { color: "F1F5F9" };
+    slide1.addText("Asset Reliability Executive Report", { x: 0, y: 2.2, w: '100%', fontSize: 36, bold: true, color: "0F172A", align: "center" });
+    slide1.addText(`Dataset: ${datasetName || 'Active System Data'}`, { x: 0, y: 3.2, w: '100%', fontSize: 18, color: "4F46E5", align: "center" });
+    slide1.addText(`Generated: ${new Date().toLocaleDateString()}`, { x: 0, y: 4.8, w: '100%', fontSize: 12, color: "94A3B8", align: "center" });
+
+    // 2. Metrics Overview Slide
+    const slide2 = pptx.addSlide();
+    slide2.addText("Reliability Performance Overview", { x: 0.5, y: 0.4, w: 9, h: 0.5, fontSize: 24, bold: true, color: "0F172A" });
+    
+    const metricBoxes = [
+        { label: "MTBF", val: `${metrics.mtbf.toFixed(1)} hrs`, color: "4F46E5" },
+        { label: "MTTR", val: `${metrics.mttr.toFixed(1)} hrs`, color: "F59E0B" },
+        { label: "Availability", val: `${metrics.availability.toFixed(1)}%`, color: "10B981" }
+    ];
+
+    metricBoxes.forEach((m, i) => {
+        const xPos = 0.5 + (i * 3.1);
+        slide2.addShape(pptx.ShapeType.rect, { x: xPos, y: 1.1, w: 2.8, h: 1, fill: { color: "FFFFFF" }, line: { color: "E2E8F0", width: 1 } });
+        slide2.addText(m.label, { x: xPos, y: 1.3, w: 2.8, h: 0.3, fontSize: 12, bold: true, color: "64748B", align: "center" });
+        slide2.addText(m.val, { x: xPos, y: 1.6, w: 2.8, h: 0.4, fontSize: 22, bold: true, color: m.color, align: "center" });
+    });
+
+    // Capture main asset downtime chart
+    const chart1 = await getChartBase64('chart-container-0');
+    if (chart1) {
+        slide2.addImage({ data: chart1, x: 0.5, y: 2.4, w: 9, h: 4.8 });
+    } else {
+        slide2.addText("[Chart capture unavailable - Ensure 'System Overview' is visible]", { x: 0.5, y: 3.5, w: 9, align: 'center', color: '94A3B8', fontSize: 10 });
+    }
+
+    // 3. Root Cause Analysis Slide
+    const slide3 = pptx.addSlide();
+    slide3.addText("Criticality & Root Cause Analysis", { x: 0.5, y: 0.4, w: 9, h: 0.5, fontSize: 24, bold: true });
+    
+    const paretoImg = await getChartBase64('chart-pareto-analysis');
+    if (paretoImg) {
+        slide3.addImage({ data: paretoImg, x: 0.5, y: 1.2, w: 6, h: 4.5 });
+    }
+    
+    const heatmapImg = await getChartBase64('chart-heatmap');
+    if (heatmapImg) {
+        slide3.addImage({ data: heatmapImg, x: 6.7, y: 1.2, w: 2.8, h: 4.5 });
+    }
+    
+    slide3.addText("Pareto identifies vital few drivers of downtime. Heatmap isolates operational risk windows.", { x: 0.5, y: 6.0, w: 9, fontSize: 11, color: "475569", italic: true });
+
+    // 4. Trend Analysis Slide
+    const slide4 = pptx.addSlide();
+    slide4.addText("Reliability Growth & Stability Trends", { x: 0.5, y: 0.4, w: 9, h: 0.5, fontSize: 24, bold: true });
+    
+    const growthImg = await getChartBase64('chart-log-growth');
+    if (growthImg) slide4.addImage({ data: growthImg, x: 0.5, y: 1.2, w: 4.5, h: 4.5 });
+    
+    const rollingImg = await getChartBase64('chart-stability-matrix');
+    if (rollingImg) slide4.addImage({ data: rollingImg, x: 5.2, y: 1.2, w: 4.5, h: 4.5 });
+
+    pptx.writeFile({ fileName: `Reliability_Report_${datasetName.replace(/\s+/g, '_') || 'System'}.pptx` });
+};
+
+/**
+ * Utility to render a chart and copy it to the clipboard as an image.
+ */
+export const exportChartAsPNG = async (containerId: string, fileName: string) => {
+    const dataUrl = await getChartBase64(containerId);
+    if (!dataUrl) return;
+
+    const base64Content = dataUrl.split(',')[1];
+    const byteCharacters = atob(base64Content);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], { type: 'image/png' });
+
+    try {
+        const item = new ClipboardItem({ "image/png": blob });
+        await navigator.clipboard.write([item]);
+        alert("Snapshot copied to clipboard!");
+    } catch (err) {
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = `${fileName}.png`;
+        link.click();
+    }
 };
 
 /**
@@ -56,17 +155,15 @@ export const readExcelRaw = async (file: File): Promise<{ headers: string[], row
         reader.onload = (e) => {
             try {
                 const data = new Uint8Array(e.target?.result as ArrayBuffer);
-                // Optimized parsing: raw values prioritized
                 const workbook = window.XLSX.read(data, { 
                     type: 'array', 
                     cellDates: true, 
                     cellFormula: false, 
                     cellHTML: false, 
-                    cellText: true // Enable cellText to capture exact display strings from Excel
+                    cellText: true 
                 });
                 const sheetName = workbook.SheetNames[0];
                 const sheet = workbook.Sheets[sheetName];
-                // Use defval to ensure empty cells result in empty strings, not undefined
                 const jsonData = window.XLSX.utils.sheet_to_json(sheet, { defval: "" }); 
                 
                 if (jsonData.length === 0) {
@@ -91,7 +188,6 @@ const parseCustomDate = (value: any): string | undefined => {
     }
     if (!value) return undefined;
     const str = String(value).trim();
-    // Try to match YYYY-MM-DD or similar
     const match = str.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
     if (match) {
         const y = parseInt(match[1]);
@@ -107,7 +203,6 @@ const parseCustomDate = (value: any): string | undefined => {
 const timeToMinutes = (val: any): number | null => {
     if (val === undefined || val === null || val === '') return null;
     if (typeof val === 'number') {
-        // Excel stores time as a fraction of a day
         const fractionalDay = val % 1;
         return Math.round(fractionalDay * 24 * 60);
     }
@@ -124,9 +219,6 @@ const timeToMinutes = (val: any): number | null => {
     return null;
 };
 
-/**
- * Process raw excel data into application objects without AI alterations
- */
 export const processMappedData = (
     rawRows: any[], 
     mapping: FieldMapping[], 
@@ -182,7 +274,7 @@ export const processMappedData = (
                     description: String(getVal(row, 'description')),
                     location: String(getVal(row, 'location')),
                     failureMode: String(getVal(row, 'failureMode')),
-                    delayType: String(getVal(row, 'delayType')) // Added mapping
+                    delayType: String(getVal(row, 'delayType'))
                 });
             }
         }
@@ -205,7 +297,7 @@ export const processMappedData = (
                 id: `pm-import-${index}-${timestamp}`,
                 asset: String(getVal(row, 'asset')),
                 taskDescription: String(getVal(row, 'taskDescription')),
-                frequency: String(rawFreq), // PULL EXACT FREQUENCY STRING FROM EXCEL
+                frequency: String(rawFreq), 
                 trade: String(getVal(row, 'trade')),
                 estimatedDuration: rawDur !== "" ? Number(rawDur) : 0,
                 shutdownRequired: isShutdown,
@@ -218,9 +310,6 @@ export const processMappedData = (
     }
 };
 
-/**
- * Normalization only used for calculation/analytics, not during import storage
- */
 export const normalizeFrequency = (freq: string): number => {
     if (!freq) return 1;
     const f = freq.toLowerCase().trim();

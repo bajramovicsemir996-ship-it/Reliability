@@ -1,8 +1,8 @@
 
 import React, { useState, useMemo } from 'react';
 import { RawRecord, StoppageType } from '../types';
-import { Trash2, Plus, ArrowUpDown, ArrowUp, ArrowDown, Sparkles, Loader2, ListChecks, Check, X, ArrowRight, Info, Filter, Calendar } from 'lucide-react';
-import { suggestFailureMode, classifyFailureModes, performSemanticClustering } from '../services/geminiService';
+import { Trash2, Plus, ArrowUpDown, ArrowUp, ArrowDown, Sparkles, Loader2, ListChecks, Check, X, ArrowRight, Info, Filter, Calendar, Globe, Languages } from 'lucide-react';
+import { suggestFailureMode, classifyFailureModes, performSemanticClustering, translateTechnicalTerms } from '../services/geminiService';
 import { useAppStore } from '../store';
 
 interface DataGridProps {
@@ -39,6 +39,11 @@ const DataGrid: React.FC<DataGridProps> = ({ data, setData, loadingAI, setLoadin
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [reviewData, setReviewData] = useState<ReviewItem[]>([]);
 
+  // Translation Wizard State
+  const [translateModalOpen, setTranslateModalOpen] = useState(false);
+  const [sourceLang, setSourceLang] = useState('Polish');
+  const [selectedCols, setSelectedCols] = useState<string[]>(['description']);
+
   const uncategorizedCount = useMemo(() => data.filter(r => isUncategorized(r.failureMode)).length, [data]);
 
   const assetList = useMemo(() => {
@@ -64,6 +69,47 @@ const DataGrid: React.FC<DataGridProps> = ({ data, setData, loadingAI, setLoadin
   const handleDelete = (id: string) => setData(data.filter(r => r.id !== id));
   const handleChange = (id: string, field: keyof RawRecord, value: any) => {
     setData(data.map(r => r.id === id ? { ...r, [field]: value } : r));
+  };
+
+  const handleTranslate = async () => {
+      if (selectedCols.length === 0) return alert("Select at least one column to translate.");
+      setLoadingAI(true);
+      try {
+          // Extract unique terms across all selected columns
+          const uniqueTermsSet = new Set<string>();
+          data.forEach(row => {
+              selectedCols.forEach(col => {
+                  const val = String((row as any)[col] || '').trim();
+                  if (val && val !== 'No description') uniqueTermsSet.add(val);
+              });
+          });
+
+          const uniqueTerms = Array.from(uniqueTermsSet);
+          if (uniqueTerms.length === 0) return;
+
+          // Perform translation
+          const translationMap = await translateTechnicalTerms(uniqueTerms, sourceLang, "English");
+
+          // Overwrite original data with translated terms
+          const translatedData = data.map(row => {
+              const newRow = { ...row };
+              selectedCols.forEach(col => {
+                  const val = String((row as any)[col] || '').trim();
+                  if (translationMap[val]) {
+                      (newRow as any)[col] = translationMap[val];
+                  }
+              });
+              return newRow;
+          });
+
+          setData(translatedData);
+          setTranslateModalOpen(false);
+          alert("Translation complete. Dataset has been updated to English.");
+      } catch (e) {
+          alert("Translation failed.");
+      } finally {
+          setLoadingAI(false);
+      }
   };
 
   const handleAssetSelectChange = (id: string, value: string) => {
@@ -244,6 +290,10 @@ const DataGrid: React.FC<DataGridProps> = ({ data, setData, loadingAI, setLoadin
       );
   };
 
+  const toggleColSelection = (col: string) => {
+      setSelectedCols(prev => prev.includes(col) ? prev.filter(c => c !== col) : [...prev, col]);
+  };
+
   return (
     <div className="bg-white rounded-[2rem] shadow-xl border border-slate-200 flex flex-col h-full relative overflow-hidden ring-1 ring-slate-900/5">
       <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
@@ -255,6 +305,10 @@ const DataGrid: React.FC<DataGridProps> = ({ data, setData, loadingAI, setLoadin
         </div>
         <div className="flex items-center gap-4">
              <div className="flex items-center gap-2 p-1.5 bg-slate-50 rounded-2xl border border-slate-100 shadow-inner">
+                 <button onClick={() => setTranslateModalOpen(true)} title="Translate dataset" disabled={loadingAI || data.length === 0} className="flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition shadow-sm border border-slate-200 disabled:opacity-50">
+                    <Globe size={14} className="text-indigo-500"/> Neural Translate
+                 </button>
+                 <div className="h-4 w-px bg-slate-200 mx-1"></div>
                  <button onClick={handleSemanticClustering} title="Standardize descriptions" disabled={loadingAI} className="flex items-center gap-2 bg-white hover:bg-indigo-50 text-indigo-700 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition shadow-sm border border-slate-200 disabled:opacity-50">{loadingAI ? <Loader2 size={14} className="animate-spin"/> : <Sparkles size={14}/>} 1. Clean</button>
                  <ArrowRight size={14} className="text-slate-300"/>
                  <button onClick={handleReviewMissing} title="Assign failure modes" disabled={loadingAI} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition shadow-lg relative border border-transparent disabled:opacity-50">
@@ -333,6 +387,86 @@ const DataGrid: React.FC<DataGridProps> = ({ data, setData, loadingAI, setLoadin
           </tbody>
         </table>
       </div>
+
+      {/* Neural Translation Wizard Modal */}
+      {translateModalOpen && (
+          <div className="fixed inset-0 bg-slate-950/80 z-[200] flex items-center justify-center p-4 backdrop-blur-md">
+              <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200 ring-1 ring-white/20">
+                  <div className="p-8 border-b bg-slate-50 flex justify-between items-center text-slate-800 shrink-0">
+                      <div>
+                        <h2 className="text-xl font-black uppercase tracking-widest flex items-center gap-3">
+                            <div className="p-2 bg-indigo-600 rounded-2xl shadow-lg text-white"><Globe size={24}/></div>
+                            Neural Translation Wizard
+                        </h2>
+                        <p className="text-[10px] text-slate-400 font-black uppercase mt-2 tracking-widest">Perform technical 1:1 translation for database localization</p>
+                      </div>
+                      <button onClick={() => setTranslateModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors"><X size={24}/></button>
+                  </div>
+                  
+                  <div className="p-8 space-y-8 bg-white">
+                      <div>
+                          <label className="text-[10px] font-black text-slate-400 uppercase mb-3 block tracking-widest">1. Select Columns to Translate</label>
+                          <div className="grid grid-cols-2 gap-3">
+                              {[
+                                  { id: 'description', label: 'Description' },
+                                  { id: 'location', label: 'Asset Name' },
+                                  { id: 'failureMode', label: 'Failure Mode' },
+                                  { id: 'delayType', label: 'Delay Type' }
+                              ].map(col => (
+                                  <button 
+                                    key={col.id} 
+                                    onClick={() => toggleColSelection(col.id)}
+                                    className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${selectedCols.includes(col.id) ? 'bg-indigo-50 border-indigo-200 text-indigo-700 ring-1 ring-indigo-500' : 'bg-slate-50 border-slate-100 text-slate-500'}`}
+                                  >
+                                      <span className="text-[11px] font-black uppercase">{col.label}</span>
+                                      {selectedCols.includes(col.id) ? <Check size={16}/> : <div className="w-4 h-4 rounded-full border border-slate-200"></div>}
+                                  </button>
+                              ))}
+                          </div>
+                      </div>
+
+                      <div className="flex gap-6">
+                          <div className="flex-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase mb-3 block tracking-widest">2. Source Language</label>
+                              <select 
+                                value={sourceLang} 
+                                onChange={e => setSourceLang(e.target.value)}
+                                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-black uppercase text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+                              >
+                                  {['Polish', 'French', 'Spanish', 'German', 'Italian', 'Auto-Detect'].map(l => <option key={l} value={l}>{l}</option>)}
+                              </select>
+                          </div>
+                          <div className="flex items-end pb-3 text-slate-300"><ArrowRight size={24}/></div>
+                          <div className="flex-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase mb-3 block tracking-widest">3. Target Language</label>
+                              <div className="w-full bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 text-xs font-black uppercase text-indigo-700 flex items-center justify-between">
+                                  English <span className="text-[9px] bg-indigo-200 px-2 py-0.5 rounded-full">Standard</span>
+                              </div>
+                          </div>
+                      </div>
+
+                      <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl flex gap-3 text-amber-800">
+                          <Info size={20} className="shrink-0"/>
+                          <p className="text-[10px] font-bold leading-relaxed uppercase">
+                              <strong>Note:</strong> This will translate all unique strings in the selected columns across your entire active dataset. The original records will be updated in memory.
+                          </p>
+                      </div>
+                  </div>
+                  
+                  <div className="p-8 border-t bg-slate-50 flex justify-end gap-4 shrink-0">
+                    <button onClick={() => setTranslateModalOpen(false)} className="px-8 py-3 font-black text-[10px] uppercase tracking-widest text-slate-500 hover:bg-slate-200 rounded-2xl transition-all">Cancel</button>
+                    <button 
+                        onClick={handleTranslate} 
+                        disabled={loadingAI}
+                        className="px-10 py-3 rounded-2xl bg-indigo-600 text-white font-black text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-indigo-600/20 hover:bg-indigo-700 transition-all disabled:opacity-50 flex items-center gap-2"
+                    >
+                        {loadingAI ? <Loader2 size={16} className="animate-spin"/> : <Languages size={16}/>}
+                        {loadingAI ? 'Translating...' : 'Translate to English'}
+                    </button>
+                  </div>
+              </div>
+          </div>
+      )}
       
       {/* AI Classification Review Modal */}
       {reviewModalOpen && (

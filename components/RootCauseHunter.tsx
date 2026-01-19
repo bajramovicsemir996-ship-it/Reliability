@@ -5,12 +5,12 @@ import { calculateMetrics, exportChartAsPNG } from '../utils/reliabilityMath';
 import { getRcaNarrative } from '../services/geminiService';
 import { 
     ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, 
-    ResponsiveContainer, Cell, ScatterChart, Scatter, ZAxis, BarChart 
+    ResponsiveContainer, Cell, ScatterChart, Scatter, ZAxis, BarChart, LabelList 
 } from 'recharts';
 import { 
     Filter, Target, Clock, Zap, AlertTriangle, ShieldCheck, Activity, 
     Info, RefreshCcw, TrendingUp, TrendingDown, Hash, Loader2, Sparkles, 
-    ChevronRight, Calendar, BarChart3, Crosshair, Layers, Camera 
+    ChevronRight, Calendar, BarChart3, Crosshair, Layers, Camera, X, ClipboardCopy, FileSpreadsheet, ListChecks, Eye, EyeOff
 } from 'lucide-react';
 import { useAppStore } from '../store';
 
@@ -59,8 +59,10 @@ const AINarrativeSkeleton = () => (
 const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters, setBox1Filter }) => {
     const { language } = useAppStore();
     const [paretoBasis, setParetoBasis] = useState<'duration' | 'count'>('duration');
-    const [aiNarrative, setAiNarrative] = useState<string>('');
+    const [analysisResult, setAnalysisResult] = useState<{ narrative: string, fmea: any[] } | null>(null);
     const [loadingAI, setLoadingAI] = useState(false);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [showBarLabels, setShowBarLabels] = useState<boolean>(false);
 
     const assetList = useMemo(() => Array.from(new Set(box1Data.map(r => r.location))).filter(Boolean).sort(), [box1Data]);
     const modeList = useMemo(() => Array.from(new Set(box1Data.map(r => r.failureMode))).filter(Boolean).sort(), [box1Data]);
@@ -168,13 +170,42 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
     const runAINarrative = async () => {
         setLoadingAI(true);
         const target = box1Filters.asset !== 'All' ? box1Filters.asset : (assetList[0] || 'Unknown System');
-        const narrative = await getRcaNarrative(target, filteredData, language);
-        setAiNarrative(narrative);
-        setLoadingAI(false);
+        try {
+            const result = await getRcaNarrative(target, filteredData, language);
+            setAnalysisResult(result);
+            setIsModalOpen(true);
+        } catch (e) {
+            alert("AI Analysis failed to generate.");
+        } finally {
+            setLoadingAI(false);
+        }
+    };
+
+    const handleCopyToExcel = () => {
+        if (!analysisResult) return;
+        
+        // Header
+        let text = "FAILURE MODE\tFAILURE MECHANISM\tLOCAL/SYSTEM EFFECT\tMITIGATION RECOMMENDATION\n";
+        
+        // Rows
+        analysisResult.fmea.forEach(row => {
+            text += `${row.failureMode}\t${row.failureMechanism}\t${row.localEffect}\t${row.mitigation}\n`;
+        });
+        
+        navigator.clipboard.writeText(text);
+        alert("FMEA Table copied to clipboard in Excel format!");
     };
 
     const metrics = useMemo(() => calculateMetrics(filteredData, 'timestamp'), [filteredData]);
     const consistencyRating = metrics.mtbfCoV < 0.5 ? 'Predictable' : metrics.mtbfCoV < 1.0 ? 'Variable' : 'Chaos';
+
+    const getHeatmapColor = (count: number, maxCount: number) => {
+        if (count === 0) return '#F8FAFC';
+        const ratio = count / maxCount;
+        if (ratio < 0.3) return '#10B981'; // Green (Stable)
+        if (ratio < 0.7) return '#F59E0B'; // Amber (Concern)
+        return '#F43F5E'; // Red (Critical)
+    };
 
     return (
         <div className="space-y-12 pb-20 animate-in fade-in duration-700">
@@ -210,7 +241,16 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                     <button onClick={() => {setBox1Filter('asset', 'All'); setBox1Filter('failureMode', 'All'); setBox1Filter('delayType', 'All'); setBox1Filter('hour', 'All'); setBox1Filter('dayOfWeek', 'All');}} className="p-3 bg-white/10 rounded-2xl hover:bg-indigo-600 hover:text-white text-slate-400 transition-all shadow-md" title="Reset All Filters"><RefreshCcw size={20}/></button>
                 </div>
 
-                <div className="flex items-center gap-4 border-l border-white/10 pl-8 pr-6">
+                <div className="flex items-center gap-2 pr-4">
+                    <button 
+                        onClick={() => setShowBarLabels(!showBarLabels)} 
+                        className={`flex items-center gap-2 px-6 py-2.5 rounded-2xl border transition-all text-[10px] font-black uppercase tracking-widest shadow-sm ${showBarLabels ? 'bg-indigo-600 border-indigo-700 text-white' : 'bg-white/10 border-white/10 text-slate-400 hover:bg-white/20'}`}
+                        title={showBarLabels ? "Hide Values on Bars" : "Show Values on Bars"}
+                    >
+                        {showBarLabels ? <Eye size={16}/> : <EyeOff size={16}/>}
+                        {showBarLabels ? "Hide Values" : "Show Values"}
+                    </button>
+                    <div className="h-10 w-px bg-white/10 mx-2"></div>
                     <div className="text-right">
                         <p className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">Consistency</p>
                         <p className={`text-xs font-black uppercase tracking-widest mt-1 ${consistencyRating === 'Predictable' ? 'text-emerald-400' : 'text-rose-400'}`}>{consistencyRating}</p>
@@ -262,6 +302,14 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                                     cursor="pointer"
                                     animationDuration={2000}
                                 >
+                                    {showBarLabels && (
+                                        <LabelList 
+                                            dataKey="value" 
+                                            position="top" 
+                                            style={{ fill: '#0f172a', fontSize: '10px', fontWeight: '900' }}
+                                            formatter={(v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                                        />
+                                    )}
                                     {paretoData.map((entry, index) => {
                                         const filterType = box1Filters.asset === 'All' ? 'asset' : 'failureMode';
                                         const isActive = (box1Filters as any)[filterType] === entry.name;
@@ -294,9 +342,9 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                         <div className="flex-1 space-y-6 relative z-10 overflow-auto custom-scrollbar pr-2">
                             {loadingAI ? (
                                 <AINarrativeSkeleton />
-                            ) : aiNarrative ? (
+                            ) : analysisResult ? (
                                 <div className="text-[11px] font-medium text-slate-600 leading-[1.8] whitespace-pre-wrap italic bg-slate-50 p-6 rounded-[2rem] border border-slate-100 shadow-inner">
-                                    {aiNarrative}
+                                    {analysisResult.narrative}
                                 </div>
                             ) : (
                                 <div className="flex flex-col items-center justify-center h-full text-center space-y-6 opacity-40 py-12">
@@ -336,6 +384,97 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                 </div>
             </div>
 
+            {/* AI Analysis Modal Pop-up */}
+            {isModalOpen && analysisResult && (
+                <div className="fixed inset-0 bg-slate-950/80 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-300">
+                    <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col overflow-hidden ring-1 ring-white/20">
+                        {/* Modal Header */}
+                        <div className="p-8 border-b bg-slate-50 flex justify-between items-center shrink-0">
+                            <div className="flex items-center gap-5">
+                                <div className="p-3 bg-indigo-600 rounded-2xl shadow-lg text-white"><Sparkles size={24}/></div>
+                                <div>
+                                    <h3 className="text-xl font-black text-slate-800 uppercase tracking-widest">Engineering Root Cause Analysis</h3>
+                                    <p className="text-[10px] text-slate-400 font-black uppercase mt-1">Advanced FMEA & Diagnostic Workbench</p>
+                                </div>
+                            </div>
+                            <div className="flex gap-3">
+                                <button 
+                                    onClick={handleCopyToExcel}
+                                    className="flex items-center gap-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border border-emerald-100 shadow-sm"
+                                >
+                                    <FileSpreadsheet size={16}/> Copy to Excel
+                                </button>
+                                <button 
+                                    onClick={() => setIsModalOpen(false)}
+                                    className="p-2.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-all"
+                                >
+                                    <X size={28}/>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div className="flex-1 overflow-auto bg-white custom-scrollbar p-10 space-y-12">
+                            {/* Narrative Section */}
+                            <section>
+                                <h4 className="text-[11px] font-black text-indigo-600 uppercase tracking-[0.25em] mb-6 flex items-center gap-3 border-b border-indigo-50 pb-3">
+                                    <Activity size={16}/> Physics of Failure Narrative
+                                </h4>
+                                <div className="bg-slate-50 p-8 rounded-[2.5rem] border border-slate-100 shadow-inner text-sm text-slate-600 leading-[1.8] italic">
+                                    {analysisResult.narrative}
+                                </div>
+                            </section>
+
+                            {/* FMEA Table Section */}
+                            <section>
+                                <div className="flex justify-between items-end mb-6">
+                                    <h4 className="text-[11px] font-black text-indigo-600 uppercase tracking-[0.25em] flex items-center gap-3 border-b border-indigo-50 pb-3 flex-1">
+                                        <ListChecks size={16}/> Failure Mode & Effects Analysis (FMEA)
+                                    </h4>
+                                </div>
+                                <div className="bg-white rounded-[2rem] border border-slate-200 overflow-hidden shadow-sm ring-1 ring-slate-900/5">
+                                    <table className="w-full text-left border-collapse">
+                                        <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                            <tr>
+                                                <th className="px-6 py-5 border-r border-slate-200">Failure Mode</th>
+                                                <th className="px-6 py-5 border-r border-slate-200">Failure Mechanism</th>
+                                                <th className="px-6 py-5 border-r border-slate-200">Local/System Effect</th>
+                                                <th className="px-6 py-5">Mitigation Strategy</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100">
+                                            {analysisResult.fmea.map((row, i) => (
+                                                <tr key={i} className="hover:bg-indigo-50/30 transition-colors align-top">
+                                                    <td className="px-6 py-5 border-r border-slate-100 text-[11px] font-black text-indigo-700 uppercase tracking-tighter w-1/4">{row.failureMode}</td>
+                                                    <td className="px-6 py-5 border-r border-slate-100 text-[11px] font-medium text-slate-600 leading-relaxed w-1/4">{row.failureMechanism}</td>
+                                                    <td className="px-6 py-5 border-r border-slate-100 text-[11px] font-medium text-slate-600 leading-relaxed w-1/4">{row.localEffect}</td>
+                                                    <td className="px-6 py-5">
+                                                        <div className="bg-emerald-50 text-emerald-800 p-3 rounded-xl text-[10px] font-bold border border-emerald-100 flex items-start gap-2 shadow-sm">
+                                                            <ShieldCheck size={14} className="shrink-0 mt-0.5" />
+                                                            {row.mitigation}
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="p-8 border-t bg-slate-50 flex justify-end gap-4 shrink-0">
+                             <button 
+                                onClick={() => setIsModalOpen(false)}
+                                className="px-10 py-3 rounded-2xl bg-slate-900 text-white font-black text-[10px] uppercase tracking-[0.2em] shadow-xl hover:bg-slate-800 transition-all active:scale-95 border border-white/10"
+                            >
+                                Dismiss Analysis
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Density Bars */}
             <div className="bg-white p-12 rounded-[3.5rem] shadow-xl border border-slate-100 ring-1 ring-slate-950/[0.03] mx-2">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-16">
@@ -363,6 +502,14 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                                     <YAxis stroke="#cbd5e1" fontSize={10} fontWeight="800" axisLine={false} tickLine={false}/>
                                     <Tooltip content={<CustomTooltip/>}/>
                                     <Bar dataKey="value" name="Frequency" radius={[8, 8, 0, 0]} cursor="pointer" onClick={(p) => handleTimeBarClick(p, 'hour')} animationDuration={2000}>
+                                        {showBarLabels && (
+                                            <LabelList 
+                                                dataKey="value" 
+                                                position="top" 
+                                                style={{ fill: '#0f172a', fontSize: '9px', fontWeight: '900' }}
+                                                formatter={(v: number) => v > 0 ? v : ''}
+                                            />
+                                        )}
                                         {hourData.map((entry, index) => (
                                             <Cell 
                                                 key={`cell-${index}`} 
@@ -400,6 +547,14 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                                     <YAxis stroke="#cbd5e1" fontSize={10} fontWeight="800" axisLine={false} tickLine={false}/>
                                     <Tooltip content={<CustomTooltip/>}/>
                                     <Bar dataKey="value" name="Frequency" radius={[8, 8, 0, 0]} barSize={64} cursor="pointer" onClick={(p) => handleTimeBarClick(p, 'dayOfWeek')} animationDuration={2000} animationBegin={500}>
+                                        {showBarLabels && (
+                                            <LabelList 
+                                                dataKey="value" 
+                                                position="top" 
+                                                style={{ fill: '#0f172a', fontSize: '10px', fontWeight: '900' }}
+                                                formatter={(v: number) => v > 0 ? v : ''}
+                                            />
+                                        )}
                                         {dayData.map((entry, index) => (
                                             <Cell 
                                                 key={`cell-${index}`} 
@@ -421,7 +576,7 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                 <div className="flex justify-between items-start mb-12">
                     <div>
                         <h3 className="text-sm font-black text-slate-900 uppercase tracking-[0.3em] flex items-center gap-4">
-                            <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-100"><Crosshair size={24}/></div>
+                            <div className="p-2 rounded-xl bg-slate-50 text-slate-600 border border-slate-200 shadow-sm"><Crosshair size={24}/></div>
                             Systemic Risk Heatmap
                         </h3>
                         <p className="text-[10px] text-slate-400 font-bold uppercase mt-3 tracking-widest pl-[60px]">Cross-referencing Chronological Intensity (Hour) vs Shift Cycles (Day). Click nodes to isolate specific operational windows.</p>
@@ -451,8 +606,8 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                                         const cell = heatmapGrid.find(m => m.day === day && m.hour === h);
                                         const count = cell?.count || 0;
                                         const maxCount = Math.max(1, ...heatmapGrid.map(m => m.count));
-                                        const intensity = count > 0 ? 0.15 + (count / maxCount) * 0.85 : 0.05;
                                         const isSelected = box1Filters.dayOfWeek === day && box1Filters.hour === h.toString();
+                                        const cellColor = getHeatmapColor(count, maxCount);
                                         
                                         return (
                                             <button 
@@ -462,8 +617,8 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                                                     isSelected ? 'ring-4 ring-indigo-500 scale-125 z-10 shadow-2xl shadow-indigo-200' : 'hover:scale-110 active:scale-95'
                                                 }`}
                                                 style={{ 
-                                                    backgroundColor: count > 0 ? '#4F46E5' : '#F8FAFC',
-                                                    opacity: intensity
+                                                    backgroundColor: cellColor,
+                                                    opacity: count > 0 ? 1 : 0.4
                                                 }}
                                                 title={`${day} @ ${h}:00 - ${count} Failure Events`}
                                             >
@@ -485,15 +640,15 @@ const RootCauseHunter: React.FC<RootCauseHunterProps> = ({ box1Data, box1Filters
                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Risk Intensity:</span>
                     <div className="flex items-center gap-3">
                         <div className="w-5 h-5 rounded-md bg-slate-50 border border-slate-100"></div>
-                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Normal</span>
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">No Events</span>
                     </div>
                     <div className="flex gap-2">
-                        {[0.2, 0.4, 0.6, 0.8, 1].map((v, i) => (
-                            <div key={i} className="w-5 h-5 rounded-md bg-indigo-600" style={{ opacity: v }}></div>
-                        ))}
+                        <div className="w-5 h-5 rounded-md bg-[#10B981]"></div>
+                        <div className="w-5 h-5 rounded-md bg-[#F59E0B]"></div>
+                        <div className="w-5 h-5 rounded-md bg-[#F43F5E]"></div>
                     </div>
                     <div className="flex items-center gap-3">
-                        <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Critical Outage Zone</span>
+                        <span className="text-[10px] font-black text-rose-600 uppercase tracking-widest">Critical Outage Zone</span>
                     </div>
                 </div>
             </div>

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { readExcelRaw, processMappedData } from './utils/reliabilityMath';
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { readExcelRaw, processMappedData, calculateMetrics } from './utils/reliabilityMath';
 import { predictSpecificAttribute } from './services/geminiService';
 import DataGrid from './components/DataGrid';
 import PMDataGrid from './components/PMDataGrid';
@@ -11,10 +12,11 @@ import OptimizationPanel from './components/OptimizationPanel';
 import RootCauseHunter from './components/RootCauseHunter';
 import AIWizard from './components/AIWizard';
 import ImportWizard from './components/ImportWizard';
+import DatasetManager from './components/DatasetManager';
 import { 
   UploadCloud, BarChart2, Table, Cpu, FileSpreadsheet, Target, 
   TrendingUp, Calculator, ShieldCheck, Zap, Users, FileUp, 
-  Database, HelpCircle, X, Info, ZapOff, Play, BookOpen, Globe
+  Database, HelpCircle, X, Info, ZapOff, Play, BookOpen, Globe, Undo2, Redo2, Loader2
 } from 'lucide-react';
 import { RawRecord, PMRecord, MaintenanceCost, ImportMode, FieldMapping, AppLanguage } from './types';
 import { useAppStore } from './store';
@@ -23,6 +25,8 @@ import { dbApi } from './utils/db';
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('b1_data');
   const [isGlossaryOpen, setIsGlossaryOpen] = useState(false);
+  const [activeBox1Id, setActiveBox1Id] = useState<string | null>(null);
+  const [activeBox2Id, setActiveBox2Id] = useState<string | null>(null);
 
   // --- STORE STATE ---
   const { 
@@ -33,12 +37,27 @@ const App: React.FC = () => {
     pmPlanData, setPmPlanData,
     box2Filters, setBox2Filter,
     loadingAI, setLoadingAI,
-    language, setLanguage
+    language, setLanguage,
+    history, undo, redo
   } = useAppStore();
 
+  // --- KEYBOARD SHORTCUTS ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+            e.preventDefault();
+            undo();
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+            e.preventDefault();
+            redo();
+        }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo]);
+
   // --- PERSISTENCE LOGIC ---
-  
-  // 1. Hydrate state from DB on mount
   useEffect(() => {
     const hydrate = async () => {
         try {
@@ -48,8 +67,9 @@ const App: React.FC = () => {
                 if (saved.pmPlanData) setPmPlanData(saved.pmPlanData);
                 if (saved.box1PmDuration) setBox1PmDuration(saved.box1PmDuration);
                 if (saved.language) setLanguage(saved.language);
+                if (saved.activeBox1Id) setActiveBox1Id(saved.activeBox1Id);
+                if (saved.activeBox2Id) setActiveBox2Id(saved.activeBox2Id);
                 
-                // Hydrate Costs
                 if (saved.box1Costs) {
                     const types: ('preventive' | 'corrective')[] = ['preventive', 'corrective'];
                     types.forEach(t => {
@@ -59,7 +79,6 @@ const App: React.FC = () => {
                     });
                 }
 
-                // Hydrate Filters
                 if (saved.box1Filters) {
                     Object.entries(saved.box1Filters).forEach(([k, v]) => setBox1Filter(k, v as string));
                 }
@@ -69,14 +88,11 @@ const App: React.FC = () => {
                 
                 if (saved.activeTab && saved.activeTab !== 'edu_hub') setActiveTab(saved.activeTab);
             }
-        } catch (e) {
-            console.error("Hydration failed", e);
-        }
+        } catch (e) { console.error("Hydration failed", e); }
     };
     hydrate();
   }, []);
 
-  // 2. Auto-save state on changes (debounced)
   useEffect(() => {
     const timeout = setTimeout(() => {
         dbApi.saveSession({
@@ -88,14 +104,14 @@ const App: React.FC = () => {
             box2Filters,
             language,
             activeTab,
+            activeBox1Id,
+            activeBox2Id,
             timestamp: Date.now()
         });
     }, 1000);
     return () => clearTimeout(timeout);
-  }, [box1Data, pmPlanData, box1Costs, box1PmDuration, box1Filters, box2Filters, language, activeTab]);
+  }, [box1Data, pmPlanData, box1Costs, box1PmDuration, box1Filters, box2Filters, language, activeTab, activeBox1Id, activeBox2Id]);
 
-
-  // --- LOCAL UI STATE ---
   const [enrichingField, setEnrichingField] = useState<string | null>(null);
   const [importState, setImportState] = useState<{ open: boolean, mode: ImportMode, headers: string[], rows: any[], name: string } | null>(null);
 
@@ -111,28 +127,41 @@ const App: React.FC = () => {
       if (!importState) return;
       try {
           const processed = processMappedData(importState.rows, mapping, importState.mode, dateFormat);
+          const finalName = importState.name || (importState.mode === 'box1' ? 'New Delay Dataset' : 'New PM Strategy');
           
+          const newId = Date.now().toString();
+          const storeName = importState.mode === 'box1' ? 'datasets' : 'pm_plans';
+          
+          await dbApi.save(storeName, {
+              id: newId,
+              name: finalName,
+              date: new Date().toISOString(),
+              records: processed
+          });
+
           if (importState.mode === 'box1') {
               setBox1Data(processed as RawRecord[]);
+              setActiveBox1Id(newId);
               setActiveTab('b1_data');
           } else {
               setPmPlanData(processed as PMRecord[]);
+              setActiveBox2Id(newId);
               setActiveTab('b2_upload');
           }
-      } catch (e) { alert("Error processing mapping."); } finally { setImportState(null); }
+      } catch (e) { 
+        console.error(e);
+        alert("Error processing mapping."); 
+      } finally { 
+        setImportState(null); 
+      }
   };
 
   const handleEnrichAttribute = async (attribute: 'trade' | 'frequency' | 'taskType' | 'shutdownRequired') => {
-      const targets = pmPlanData.filter(t => {
-          if (attribute === 'shutdownRequired') return true; // AI state review for all
-          return !t[attribute] || t[attribute] === '';
-      });
-
+      const targets = pmPlanData.filter(t => attribute === 'shutdownRequired' ? true : (!t[attribute] || t[attribute] === ''));
       if (targets.length === 0 && attribute !== 'shutdownRequired') {
           alert(`All tasks already have a assigned ${attribute}.`);
           return;
       }
-
       setLoadingAI(true);
       setEnrichingField(attribute);
       try {
@@ -159,39 +188,16 @@ const App: React.FC = () => {
     } else { alert("No data available to export."); }
   };
 
-  const getHeaderTitle = () => {
-    switch(activeTab) {
-        case 'b1_data': return 'Delay Intelligence';
-        case 'b1_stats': return 'Reliability Analytics';
-        case 'b1_rch': return 'Root Cause Analysis';
-        case 'b1_trends': return 'Trend Evolution';
-        case 'b2_upload': return 'Plan Repository';
-        case 'b2_stats': return 'Strategy Insights';
-        case 'b2_opt': return 'AI Compliance & Gaps';
-        case 'b2_cost': return 'Financial Optimizer';
-        default: return 'Control Center';
-    }
-  };
-
   const NavButton = ({ tab, icon: Icon, label, colorClass }: any) => {
     const isActive = activeTab === tab;
     return (
-        <button 
-            onClick={() => setActiveTab(tab)} 
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-xs font-black uppercase tracking-widest relative group ${
-                isActive 
-                ? `${colorClass} text-white shadow-lg ring-1 ring-white/20` 
-                : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
-            }`}
-        >
+        <button onClick={() => setActiveTab(tab)} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-xs font-black uppercase tracking-widest relative group ${isActive ? `${colorClass} text-white shadow-lg ring-1 ring-white/20` : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'}`}>
             <Icon size={18} className={isActive ? 'text-white' : 'text-slate-600 group-hover:text-slate-400'} />
             {label}
             {isActive && <div className="absolute left-[-1rem] top-1/2 -translate-y-1/2 w-1.5 h-6 bg-white rounded-r-full shadow-[0_0_15px_rgba(255,255,255,0.5)]"></div>}
         </button>
     );
   };
-
-  const languages: AppLanguage[] = ['English', 'French', 'Spanish', 'German', 'Polish'];
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden">
@@ -224,18 +230,28 @@ const App: React.FC = () => {
 
         <div className="p-6 border-t border-slate-900 bg-slate-950/50 flex flex-col gap-3">
              <div className="mb-2">
-                 <h3 className="text-[9px] font-black text-slate-600 uppercase tracking-widest mb-3 ml-1 flex items-center gap-2">
-                     <Globe size={12} /> AI Response Language
-                 </h3>
-                 <div className="grid grid-cols-1 gap-1">
-                     <select 
-                        value={language} 
-                        onChange={(e) => setLanguage(e.target.value as AppLanguage)}
-                        className="bg-slate-900 border border-slate-800 text-slate-300 text-[10px] font-black uppercase py-2.5 px-3 rounded-xl outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer"
-                     >
-                        {languages.map(lang => <option key={lang} value={lang}>{lang}</option>)}
-                     </select>
-                 </div>
+                 <h3 className="text-[9px] font-black text-slate-600 uppercase tracking-widest mb-3 ml-1 flex items-center gap-2"><Globe size={12} /> AI Language</h3>
+                 <select value={language} onChange={(e) => setLanguage(e.target.value as AppLanguage)} className="bg-slate-900 border border-slate-800 text-slate-300 text-[10px] font-black uppercase py-2.5 px-3 rounded-xl outline-none focus:ring-1 focus:ring-indigo-500 transition-all cursor-pointer w-full">
+                    {['English', 'French', 'Spanish', 'German', 'Polish'].map(lang => <option key={lang} value={lang}>{lang}</option>)}
+                 </select>
+             </div>
+             <div className="grid grid-cols-2 gap-2">
+                 <button 
+                    onClick={undo} 
+                    disabled={history.past.length === 0}
+                    className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-slate-900 text-slate-300 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 border border-slate-800 transition-all shadow-lg"
+                    title="Undo (Ctrl+Z)"
+                 >
+                    <Undo2 size={16}/> Undo
+                 </button>
+                 <button 
+                    onClick={redo} 
+                    disabled={history.future.length === 0}
+                    className="bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-slate-900 text-slate-300 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 border border-slate-800 transition-all shadow-lg"
+                    title="Redo (Ctrl+Y)"
+                 >
+                    <Redo2 size={16}/> Redo
+                 </button>
              </div>
              <button onClick={handleExportExcel} className="w-full bg-slate-900 hover:bg-slate-800 text-slate-300 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 border border-slate-800 transition-all shadow-lg">
                 <FileSpreadsheet size={16} className="text-emerald-500" /> Export Bundle
@@ -245,7 +261,9 @@ const App: React.FC = () => {
 
       <main className="flex-1 flex flex-col h-screen overflow-hidden relative bg-slate-50">
         <header className="h-20 bg-white/80 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-10 shrink-0">
-            <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase tracking-widest">{getHeaderTitle()}</h2>
+            <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase tracking-widest">
+                {activeTab === 'b1_data' ? 'Delay Intelligence' : activeTab === 'b1_stats' ? 'Reliability Analytics' : activeTab === 'b1_rch' ? 'Root Cause' : activeTab === 'b1_trends' ? 'Trends' : activeTab === 'b2_upload' ? 'PM Repository' : activeTab === 'b2_stats' ? 'Strategy' : activeTab === 'b2_opt' ? 'AI Compliance' : 'Finance'}
+            </h2>
             <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-2xl border border-slate-200">
                     <Users className="text-slate-400" size={16} />
@@ -257,21 +275,14 @@ const App: React.FC = () => {
         <div className="flex-1 overflow-auto p-8 custom-scrollbar relative">
             {activeTab === 'b1_data' && (
                 <div className="flex flex-col h-full gap-6">
-                    <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between ring-1 ring-slate-900/5">
-                        <div className="flex items-center gap-3 px-3">
-                            <FileUp size={18} className="text-indigo-500"/>
-                            <div>
-                                <p className="text-[9px] text-slate-400 font-black uppercase tracking-tighter">Delay Source</p>
-                                <p className="text-[11px] font-black text-slate-700">
-                                    {box1Data.length > 0 ? `Active: ${box1Data.length} records` : 'Ready for import'}
-                                </p>
-                            </div>
-                        </div>
-                        <label className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition shadow-lg cursor-pointer">
-                            <UploadCloud size={16} /> Import Delay Logs
-                            <input type="file" accept=".xlsx, .xls" className="hidden" onChange={(e) => e.target.files?.[0] && handleImportFile(e.target.files[0], 'box1')} />
-                        </label>
-                    </div>
+                    <DatasetManager 
+                        type="failure" 
+                        currentData={box1Data} 
+                        onLoad={setBox1Data} 
+                        activeId={activeBox1Id} 
+                        onActiveIdChange={setActiveBox1Id} 
+                        onImport={(file) => handleImportFile(file, 'box1')} 
+                    />
                     <div className="flex-1 min-h-0">
                         <DataGrid data={box1Data} setData={setBox1Data} loadingAI={loadingAI} setLoadingAI={setLoadingAI} filters={box1Filters} onGlobalFilterChange={(k, v) => setBox1Filter(k, v)} />
                     </div>
@@ -283,28 +294,20 @@ const App: React.FC = () => {
             
             {activeTab === 'b2_upload' && (
                 <div className="flex flex-col h-full gap-6">
-                    <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between ring-1 ring-slate-900/5">
-                        <div className="flex items-center gap-3 px-3">
-                            <ShieldCheck size={18} className="text-emerald-500"/>
-                            <div>
-                                <p className="text-[9px] text-slate-400 font-black uppercase tracking-tighter">PM Strategy</p>
-                                <p className="text-[11px] font-black text-slate-700">
-                                    {pmPlanData.length > 0 ? `Plan: ${pmPlanData.length} tasks` : 'Load maintenance schedule'}
-                                </p>
-                            </div>
+                    <div className="flex gap-4 items-center">
+                        <div className="flex-1">
+                            <DatasetManager 
+                                type="pm" 
+                                currentData={pmPlanData} 
+                                onLoad={setPmPlanData} 
+                                activeId={activeBox2Id} 
+                                onActiveIdChange={setActiveBox2Id} 
+                                onImport={(file) => handleImportFile(file, 'box2')} 
+                            />
                         </div>
-                        <div className="flex gap-2">
-                            <button 
-                                onClick={() => setIsGlossaryOpen(true)}
-                                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-600 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition border border-slate-200"
-                            >
-                                <HelpCircle size={16} /> Strategy Glossary
-                            </button>
-                            <label className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition shadow-lg cursor-pointer">
-                                <UploadCloud size={16} /> Import PM Strategy
-                                <input type="file" accept=".xlsx, .xls" className="hidden" onChange={(e) => e.target.files?.[0] && handleImportFile(e.target.files[0], 'box2')} />
-                            </label>
-                        </div>
+                        <button onClick={() => setIsGlossaryOpen(true)} className="flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-600 px-6 py-4 rounded-[1.25rem] text-[10px] font-black uppercase tracking-widest transition border border-slate-200 shadow-sm shrink-0">
+                            <HelpCircle size={16} /> Strategy Glossary
+                        </button>
                     </div>
                      <div className="flex-1 min-h-0">
                         <PMDataGrid 
@@ -328,7 +331,7 @@ const App: React.FC = () => {
         <AIWizard contextBox={activeTab.startsWith('b1') ? 'box1' : 'box2'} dataSummary={`Records: ${activeTab.includes('b1') ? box1Data.length : pmPlanData.length}`} />
         {importState && importState.open && <ImportWizard mode={importState.mode} rawHeaders={importState.headers} rawRows={importState.rows} onConfirm={handleImportConfirm} onCancel={() => setImportState(null)} />}
         
-        {/* Strategy Glossary Modal */}
+        {/* Glossary Modal */}
         {isGlossaryOpen && (
             <div className="fixed inset-0 bg-slate-950/80 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-200">
                 <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden ring-1 ring-white/20">
@@ -336,64 +339,32 @@ const App: React.FC = () => {
                         <div className="flex items-center gap-4">
                             <div className="p-3 bg-indigo-600 rounded-2xl shadow-lg shadow-indigo-600/20 text-white"><BookOpen size={24}/></div>
                             <div>
-                                <h3 className="text-xl font-black text-slate-800 uppercase tracking-widest">Strategy & State Glossary</h3>
-                                <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Understanding RCM Strategy Classifications</p>
+                                <h3 className="text-xl font-black text-slate-800 uppercase tracking-widest">Strategy Glossary</h3>
                             </div>
                         </div>
                         <button onClick={() => setIsGlossaryOpen(false)} className="text-slate-400 hover:text-slate-600 transition p-2 hover:bg-slate-100 rounded-full"><X size={28}/></button>
                     </div>
-
                     <div className="flex-1 overflow-auto p-8 custom-scrollbar space-y-10 bg-white">
                         <section>
-                            <h4 className="text-xs font-black text-indigo-600 uppercase tracking-[0.2em] mb-6 flex items-center gap-2 border-b border-indigo-100 pb-2">
-                                <ShieldCheck size={16}/> Maintenance Strategy Types
-                            </h4>
+                            <h4 className="text-xs font-black text-indigo-600 uppercase tracking-[0.2em] mb-6 flex items-center gap-2 border-b border-indigo-100 pb-2"><ShieldCheck size={16}/> Methodology</h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 {[
-                                    { title: 'Time Based (PM)', desc: 'Maintenance performed at fixed intervals (e.g., Monthly). Best for parts with predictable wear patterns.', color: 'bg-blue-50 text-blue-700 border-blue-100' },
-                                    { title: 'Condition Based (PdM)', desc: 'Triggered by health indicators (vibration, heat). Only performed when failure is imminent.', color: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
-                                    { title: 'Scheduled Restoration', desc: 'Shop-level overhaul to return asset to "as-new" condition at fixed intervals.', color: 'bg-purple-50 text-purple-700 border-purple-100' },
-                                    { title: 'Scheduled Replacement', desc: 'Removing an item and replacing with new before it has a chance to fail.', color: 'bg-amber-50 text-amber-700 border-amber-100' },
-                                    { title: 'Failure Finding', desc: 'Functional tests to check if hidden safety functions (valves, alarms) still work.', color: 'bg-rose-50 text-rose-700 border-rose-100' }
+                                    { title: 'Time Based (PM)', desc: 'Maintenance at fixed intervals. Best for predictable wear.', color: 'bg-blue-50 text-blue-700' },
+                                    { title: 'Condition Based (PdM)', desc: 'Triggered by health indicators. Only fixed when needed.', color: 'bg-emerald-50 text-emerald-700' },
+                                    { title: 'Scheduled Restoration', desc: 'Overhaul to return asset to "as-new" condition.', color: 'bg-purple-50 text-purple-700' },
+                                    { title: 'Scheduled Replacement', desc: 'Replacement before chance of failure.', color: 'bg-amber-50 text-amber-700' },
+                                    { title: 'Failure Finding', desc: 'Checking hidden safety functions (valves, etc).', color: 'bg-rose-50 text-rose-700' }
                                 ].map((item, idx) => (
                                     <div key={idx} className={`p-5 rounded-2xl border ${item.color} flex flex-col gap-1 shadow-sm`}>
-                                        <h5 className="font-black text-[11px] uppercase tracking-wider">{item.title}</h5>
-                                        <p className="text-xs font-medium opacity-80 leading-relaxed">{item.desc}</p>
+                                        <h5 className="font-black text-[11px] uppercase">{item.title}</h5>
+                                        <p className="text-xs font-medium opacity-80">{item.desc}</p>
                                     </div>
                                 ))}
                             </div>
                         </section>
-
-                        <section>
-                            <h4 className="text-xs font-black text-slate-500 uppercase tracking-[0.2em] mb-6 flex items-center gap-2 border-b border-indigo-100 pb-2">
-                                <Zap size={16}/> Operational State
-                            </h4>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="p-6 rounded-[2rem] bg-slate-50 border border-slate-200 flex flex-col items-center text-center shadow-sm">
-                                    <div className="p-3 bg-rose-50 rounded-2xl text-rose-600 mb-4 border border-rose-100 shadow-inner"><ZapOff size={24}/></div>
-                                    <h5 className="font-black text-slate-800 text-xs uppercase tracking-widest mb-2">Shutdown Required</h5>
-                                    <p className="text-xs text-slate-500 font-medium leading-relaxed">
-                                        Asset must be fully stopped and isolated. This adds to "Planned Downtime" and impacts production capacity.
-                                    </p>
-                                </div>
-                                <div className="p-6 rounded-[2rem] bg-slate-50 border border-slate-200 flex flex-col items-center text-center shadow-sm">
-                                    <div className="p-3 bg-emerald-50 rounded-2xl text-emerald-600 mb-4 border border-emerald-100 shadow-inner"><Play size={24}/></div>
-                                    <h5 className="font-black text-slate-800 text-xs uppercase tracking-widest mb-2">Running Maintenance</h5>
-                                    <p className="text-xs text-slate-500 font-medium leading-relaxed">
-                                        Maintenance is performed while the asset is online. Zero production loss. Ideal for condition monitoring.
-                                    </p>
-                                </div>
-                            </div>
-                        </section>
                     </div>
-
                     <div className="p-8 border-t bg-slate-50/50 flex justify-end shrink-0">
-                        <button 
-                            onClick={() => setIsGlossaryOpen(false)}
-                            className="px-10 py-3 rounded-2xl bg-slate-900 text-white font-black text-[10px] uppercase tracking-[0.2em] shadow-xl hover:bg-slate-800 transition-all active:scale-95 border border-white/10"
-                        >
-                            Close Glossary
-                        </button>
+                        <button onClick={() => setIsGlossaryOpen(false)} className="px-10 py-3 rounded-2xl bg-slate-900 text-white font-black text-[10px] uppercase tracking-[0.2em] shadow-xl hover:bg-slate-800 transition-all active:scale-95 border border-white/10">Close</button>
                     </div>
                 </div>
             </div>

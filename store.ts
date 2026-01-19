@@ -3,6 +3,15 @@ import { create } from 'zustand';
 import { RawRecord, PMRecord, MaintenanceCost, ResourceConfig, AppLanguage } from './types';
 
 interface AppState {
+    // --- History Tracking ---
+    history: {
+        past: { box1Data: RawRecord[], pmPlanData: PMRecord[] }[];
+        future: { box1Data: RawRecord[], pmPlanData: PMRecord[] }[];
+    };
+    undo: () => void;
+    redo: () => void;
+    saveHistory: () => void;
+
     // --- Box 1: Reliability ---
     box1Data: RawRecord[];
     setBox1Data: (data: RawRecord[]) => void;
@@ -42,10 +51,53 @@ const defaultResources: ResourceConfig[] = [
     { trade: 'Production', headcount: 4, weeklyHours: 40, utilizationRate: 0.5 },
 ];
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
+    // History
+    history: { past: [], future: [] },
+    saveHistory: () => {
+        const { box1Data, pmPlanData, history } = get();
+        set({
+            history: {
+                past: [...history.past.slice(-49), { box1Data, pmPlanData }], // Max 50 steps
+                future: []
+            }
+        });
+    },
+    undo: () => {
+        const { history, box1Data, pmPlanData } = get();
+        if (history.past.length === 0) return;
+        const previous = history.past[history.past.length - 1];
+        const newPast = history.past.slice(0, history.past.length - 1);
+        set({
+            box1Data: previous.box1Data,
+            pmPlanData: previous.pmPlanData,
+            history: {
+                past: newPast,
+                future: [{ box1Data, pmPlanData }, ...history.future]
+            }
+        });
+    },
+    redo: () => {
+        const { history, box1Data, pmPlanData } = get();
+        if (history.future.length === 0) return;
+        const next = history.future[0];
+        const newFuture = history.future.slice(1);
+        set({
+            box1Data: next.box1Data,
+            pmPlanData: next.pmPlanData,
+            history: {
+                past: [...history.past, { box1Data, pmPlanData }],
+                future: newFuture
+            }
+        });
+    },
+
     // Box 1
     box1Data: [],
-    setBox1Data: (data) => set({ box1Data: data }),
+    setBox1Data: (data) => {
+        get().saveHistory();
+        set({ box1Data: data });
+    },
     
     box1Filters: { asset: 'All', failureMode: 'All', delayType: 'All', hour: 'All', dayOfWeek: 'All' },
     setBox1Filter: (key, value) => set((state) => ({
@@ -68,7 +120,10 @@ export const useAppStore = create<AppState>((set) => ({
 
     // Box 2
     pmPlanData: [],
-    setPmPlanData: (data) => set({ pmPlanData: data }),
+    setPmPlanData: (data) => {
+        get().saveHistory();
+        set({ pmPlanData: data });
+    },
 
     box2Filters: { asset: 'All', trade: 'All', frequency: 'All', executorType: 'All', criticality: 'All', strategy: 'All', state: 'All' },
     setBox2Filter: (key, value) => set((state) => ({
