@@ -58,7 +58,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { box1Data, pmPlanData, history } = get();
         set({
             history: {
-                past: [...history.past.slice(-49), { box1Data, pmPlanData }], // Max 50 steps
+                past: [...history.past.slice(-49), { box1Data, pmPlanData }], 
                 future: []
             }
         });
@@ -92,7 +92,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
     },
 
-    // Box 1 - Ensure defaults are empty for deployment
+    // Box 1 - EXPLICIT EMPTY STATE
     box1Data: [],
     setBox1Data: (data) => {
         get().saveHistory();
@@ -118,7 +118,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     box1PmDuration: 0,
     setBox1PmDuration: (v) => set({ box1PmDuration: v }),
 
-    // Box 2 - Ensure defaults are empty for deployment
+    // Box 2 - EXPLICIT EMPTY STATE
     pmPlanData: [],
     setPmPlanData: (data) => {
         get().saveHistory();

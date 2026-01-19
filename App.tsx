@@ -28,7 +28,6 @@ const App: React.FC = () => {
   const [activeBox1Id, setActiveBox1Id] = useState<string | null>(null);
   const [activeBox2Id, setActiveBox2Id] = useState<string | null>(null);
 
-  // --- STORE STATE ---
   const { 
     box1Data, setBox1Data, 
     box1Filters, setBox1Filter, 
@@ -41,69 +40,68 @@ const App: React.FC = () => {
     history, undo, redo
   } = useAppStore();
 
-  // --- KEYBOARD SHORTCUTS ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-            e.preventDefault();
-            undo();
-        }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
-            e.preventDefault();
-            redo();
-        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [undo, redo]);
 
-  // --- PERSISTENCE LOGIC ---
+  // STRENGHTENED HYDRATION
   useEffect(() => {
     const hydrate = async () => {
         try {
-            // Attempt migration first for users coming from older localStorage versions
             await dbApi.migrateFromLocalStorage();
-            
             const saved = await dbApi.getSession();
-            if (saved) {
-                // Only set data if it actually exists in the saved session
-                if (saved.box1Data && saved.box1Data.length > 0) setBox1Data(saved.box1Data);
-                if (saved.pmPlanData && saved.pmPlanData.length > 0) setPmPlanData(saved.pmPlanData);
-                if (saved.box1PmDuration) setBox1PmDuration(saved.box1PmDuration);
-                if (saved.language) setLanguage(saved.language);
-                if (saved.activeBox1Id) setActiveBox1Id(saved.activeBox1Id);
-                if (saved.activeBox2Id) setActiveBox2Id(saved.activeBox2Id);
-                
-                if (saved.box1Costs) {
-                    const types: ('preventive' | 'corrective')[] = ['preventive', 'corrective'];
-                    types.forEach(t => {
+            
+            // IF NO SAVED SESSION: FORCE EMPTY
+            if (!saved) {
+                setBox1Data([]);
+                setPmPlanData([]);
+                return;
+            }
+
+            // ONLY HYDRATE IF DATA EXISTS
+            if (saved.box1Data && Array.isArray(saved.box1Data)) setBox1Data(saved.box1Data);
+            if (saved.pmPlanData && Array.isArray(saved.pmPlanData)) setPmPlanData(saved.pmPlanData);
+            
+            if (saved.box1PmDuration !== undefined) setBox1PmDuration(saved.box1PmDuration);
+            if (saved.language) setLanguage(saved.language);
+            if (saved.activeBox1Id) setActiveBox1Id(saved.activeBox1Id);
+            if (saved.activeBox2Id) setActiveBox2Id(saved.activeBox2Id);
+            
+            if (saved.box1Costs) {
+                const types: ('preventive' | 'corrective')[] = ['preventive', 'corrective'];
+                types.forEach(t => {
+                    if (saved.box1Costs[t]) {
                         Object.entries(saved.box1Costs[t]).forEach(([field, value]) => {
                             updateCost(t, field as any, value as number);
                         });
-                    });
-                }
-
-                if (saved.box1Filters) {
-                    Object.entries(saved.box1Filters).forEach(([k, v]) => setBox1Filter(k, v as string));
-                }
-                if (saved.box2Filters) {
-                    Object.entries(saved.box2Filters).forEach(([k, v]) => setBox2Filter(k, v as string));
-                }
-                
-                if (saved.activeTab && saved.activeTab !== 'edu_hub') setActiveTab(saved.activeTab);
-            } else {
-                // Explicitly clear memory if no session is found to prevent leaks from deployment env
-                setBox1Data([]);
-                setPmPlanData([]);
+                    }
+                });
             }
-        } catch (e) { console.error("Hydration failed", e); }
+
+            if (saved.box1Filters) {
+                Object.entries(saved.box1Filters).forEach(([k, v]) => setBox1Filter(k, v as string));
+            }
+            if (saved.box2Filters) {
+                Object.entries(saved.box2Filters).forEach(([k, v]) => setBox2Filter(k, v as string));
+            }
+            
+            if (saved.activeTab && saved.activeTab !== 'edu_hub') setActiveTab(saved.activeTab);
+        } catch (e) { 
+            console.error("Hydration failed", e);
+            setBox1Data([]);
+            setPmPlanData([]);
+        }
     };
     hydrate();
   }, []);
 
   useEffect(() => {
     const timeout = setTimeout(() => {
-        // Only save session if there is actually data to save, or if it's the initial clear state
         dbApi.saveSession({
             box1Data,
             pmPlanData,
