@@ -61,10 +61,14 @@ const App: React.FC = () => {
   useEffect(() => {
     const hydrate = async () => {
         try {
+            // Attempt migration first for users coming from older localStorage versions
+            await dbApi.migrateFromLocalStorage();
+            
             const saved = await dbApi.getSession();
             if (saved) {
-                if (saved.box1Data) setBox1Data(saved.box1Data);
-                if (saved.pmPlanData) setPmPlanData(saved.pmPlanData);
+                // Only set data if it actually exists in the saved session
+                if (saved.box1Data && saved.box1Data.length > 0) setBox1Data(saved.box1Data);
+                if (saved.pmPlanData && saved.pmPlanData.length > 0) setPmPlanData(saved.pmPlanData);
                 if (saved.box1PmDuration) setBox1PmDuration(saved.box1PmDuration);
                 if (saved.language) setLanguage(saved.language);
                 if (saved.activeBox1Id) setActiveBox1Id(saved.activeBox1Id);
@@ -87,6 +91,10 @@ const App: React.FC = () => {
                 }
                 
                 if (saved.activeTab && saved.activeTab !== 'edu_hub') setActiveTab(saved.activeTab);
+            } else {
+                // Explicitly clear memory if no session is found to prevent leaks from deployment env
+                setBox1Data([]);
+                setPmPlanData([]);
             }
         } catch (e) { console.error("Hydration failed", e); }
     };
@@ -95,6 +103,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const timeout = setTimeout(() => {
+        // Only save session if there is actually data to save, or if it's the initial clear state
         dbApi.saveSession({
             box1Data,
             pmPlanData,

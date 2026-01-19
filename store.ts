@@ -44,11 +44,11 @@ interface AppState {
 }
 
 const defaultResources: ResourceConfig[] = [
-    { trade: 'Mechanical', headcount: 2, weeklyHours: 40, utilizationRate: 0.8 },
-    { trade: 'Electrical', headcount: 1, weeklyHours: 40, utilizationRate: 0.8 },
-    { trade: 'Hydraulic', headcount: 1, weeklyHours: 40, utilizationRate: 0.8 },
-    { trade: 'Automation', headcount: 1, weeklyHours: 40, utilizationRate: 0.75 },
-    { trade: 'Production', headcount: 4, weeklyHours: 40, utilizationRate: 0.5 },
+    { trade: 'Mechanical', headcount: 0, weeklyHours: 40, utilizationRate: 0.8 },
+    { trade: 'Electrical', headcount: 0, weeklyHours: 40, utilizationRate: 0.8 },
+    { trade: 'Hydraulic', headcount: 0, weeklyHours: 40, utilizationRate: 0.8 },
+    { trade: 'Automation', headcount: 0, weeklyHours: 40, utilizationRate: 0.75 },
+    { trade: 'Production', headcount: 0, weeklyHours: 40, utilizationRate: 0.5 },
 ];
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -92,7 +92,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
     },
 
-    // Box 1
+    // Box 1 - Ensure defaults are empty for deployment
     box1Data: [],
     setBox1Data: (data) => {
         get().saveHistory();
@@ -105,8 +105,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
 
     box1Costs: { 
-        preventive: { material: 50, labor: 25, productionLoss: 100 }, 
-        corrective: { material: 200, labor: 40, productionLoss: 100 } 
+        preventive: { material: 0, labor: 0, productionLoss: 0 }, 
+        corrective: { material: 0, labor: 0, productionLoss: 0 } 
     },
     updateCost: (type, field, value) => set((state) => ({
         box1Costs: {
@@ -115,10 +115,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
     })),
 
-    box1PmDuration: 2,
+    box1PmDuration: 0,
     setBox1PmDuration: (v) => set({ box1PmDuration: v }),
 
-    // Box 2
+    // Box 2 - Ensure defaults are empty for deployment
     pmPlanData: [],
     setPmPlanData: (data) => {
         get().saveHistory();
